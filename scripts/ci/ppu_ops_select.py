@@ -150,10 +150,10 @@ def discover_catalog(config, repo):
     repo = Path(repo).resolve()
     catalog = config["test_catalog"]
     require(isinstance(catalog, list), "测试目录必须为数组")
-    listed = set()
+    listed = {}
     for item in catalog:
         require(isinstance(item, dict), "测试配置必须为对象")
-        listed.add(safe_path(item.get("test")))
+        listed[safe_path(item.get("test"))] = item
     discovered = set()
     for path in sorted((repo / "tests/e2e").rglob("test_*.py")):
         require(path.resolve().is_relative_to(repo) and path.is_file(), "测试路径逃逸")
@@ -181,32 +181,40 @@ def discover_catalog(config, repo):
         require(len(declarations) <= 1, f"{relative}: 重复设备数量声明")
         if declarations:
             devices = declarations[0]
-        boards = sorted(
-            board
-            for board, profile in config["execution_profiles"].items()
-            if profile["nproc_per_node"] >= devices
-        )
-        if not boards:
-            require(relative not in listed, f"{relative}: 显式目录超出执行器设备数量")
+        discovered.add(relative)
+        item = listed.get(relative)
+        if item is None:
+            name = re.sub(r"[^a-z0-9]+", "-", relative[10:-3].lower()).strip("-")
+            item = {
+                "id": f"auto-{name}-{checksum(relative.encode())[:8]}",
+                "test": relative,
+                "boards": sorted(config["execution_profiles"]),
+                "requires": ["torch", "triton", "vllm", "vllm_sail"],
+                "board_overrides": {},
+            }
+            catalog.append(item)
+        # Keep overrides and source IDs even when no current profile can run them.
+        # Resource metadata is derived from source, never persisted to the JSON.
+        if devices > 1:
+            item["min_devices"] = devices
+        else:
+            item.pop("min_devices", None)
+        if not runnable_boards(config, item):
             print(
                 f"PPU CI excludes {relative}: requires {devices} devices; "
                 "current execution profiles cannot run it",
                 file=sys.stderr,
             )
-            continue
-        discovered.add(relative)
-        if relative not in listed:
-            name = re.sub(r"[^a-z0-9]+", "-", relative[10:-3].lower()).strip("-")
-            catalog.append(
-                {
-                    "id": f"auto-{name}-{checksum(relative.encode())[:8]}",
-                    "test": relative,
-                    "boards": boards,
-                    "requires": ["torch", "triton", "vllm", "vllm_sail"],
-                    "board_overrides": {},
-                }
-            )
     return discovered
+
+
+def runnable_boards(config, item):
+    return sorted(
+        board
+        for board, profile in config["execution_profiles"].items()
+        if board in item["boards"]
+        and profile["nproc_per_node"] >= item.get("min_devices", 1)
+    )
 
 
 def validate_config(config, repo):
@@ -219,7 +227,10 @@ def validate_config(config, repo):
     require(isinstance(catalog, list) and bool(catalog), "缺少测试目录")
     ids, tests = set(), set()
     for item in catalog:
-        keys(item, ("id", "test", "boards", "requires", "board_overrides"))
+        expected_keys = {"id", "test", "boards", "requires", "board_overrides"}
+        if "min_devices" in item:
+            expected_keys.add("min_devices")
+        keys(item, expected_keys)
         require(
             isinstance(item["id"], str) and re.fullmatch(ID_PATTERN, item["id"]),
             "非法测试 ID",
@@ -327,7 +338,7 @@ def validate_config(config, repo):
     validate_ut_isolation(repo)
     routed = route_tests(config, sorted(ids))
     pairs = [(test, g["board"]) for g in routed["groups"] for test in g["test_ids"]]
-    expected = {(t["id"], b) for t in catalog for b in t["boards"]}
+    expected = {(t["id"], b) for t in catalog for b in runnable_boards(config, t)}
     require(
         len(pairs) == len(set(pairs)) and set(pairs) == expected, "路由不完整或重复"
     )
@@ -370,6 +381,10 @@ def select_tests(config, paths, *, diff_complete, force_full, environment_matche
             reasons.add("unmapped_path")
     if full:
         selected = {t["id"] for t in catalog}
+    runnable = {t["id"] for t in catalog if runnable_boards(config, t)}
+    if selected - runnable:
+        reasons.add("insufficient_devices")
+    selected &= runnable
     return {
         "mode": "full" if full else "subset" if selected else "none",
         "test_ids": sorted(selected),
@@ -392,7 +407,9 @@ def route_tests(config, test_ids):
             "无有效路由",
         )
     for board in sorted(BOARDS):
-        ids = sorted(t for t in set(test_ids) if board in catalog[t]["boards"])
+        ids = sorted(
+            t for t in set(test_ids) if board in runnable_boards(config, catalog[t])
+        )
         if ids:
             groups.append(
                 {
@@ -771,10 +788,16 @@ def validate_selection(
     require(selection["files"] == expected_files, "ID/文件不符")
     mode = selection["mode"]
     require(mode in ("none", "subset", "full"), "未知选择模式")
-    require(bool(selection["test_ids"]) == (mode != "none"), "空/非空模式不符")
+    require(
+        mode == "full" or bool(selection["test_ids"]) == (mode != "none"),
+        "空/非空模式不符",
+    )
     if mode == "full":
         require(
-            selection["test_ids"] == sorted(t["id"] for t in config["test_catalog"]),
+            selection["test_ids"]
+            == sorted(
+                t["id"] for t in config["test_catalog"] if runnable_boards(config, t)
+            ),
             "全量清单不完整",
         )
     fingerprint = selection["build_fingerprint"]

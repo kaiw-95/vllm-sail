@@ -45,11 +45,15 @@ def test_real_config_and_full_routes(selector, config):
     result = selector.select_tests(config, ["csrc/unknown.cu"], **OPTIONS)
     assert result["mode"] == "full"
     assert "native_change" in result["reasons"]
-    assert result["test_ids"] == sorted(t["id"] for t in config["test_catalog"])
+    assert result["test_ids"] == sorted(
+        t["id"] for t in config["test_catalog"] if selector.runnable_boards(config, t)
+    )
     routes = selector.route_tests(config, result["test_ids"])
     for group in routes["groups"]:
         assert group["files"] == sorted(
-            t["test"] for t in config["test_catalog"] if group["board"] in t["boards"]
+            t["test"]
+            for t in config["test_catalog"]
+            if group["board"] in selector.runnable_boards(config, t)
         )
     assert routes["matrix"]["include"] == [
         {"group_id": b + "-0", "board": b, "nproc_per_node": 1}
@@ -157,9 +161,65 @@ def test_multi_device_files_are_reported_and_not_routed_to_single_device_ci(
     single = add_device_test(tmp_path, "test_single.py")
     multi = add_device_test(tmp_path, "test_communication.py", "PPU_CI_MIN_DEVICES = 2")
     selector.validate_config(discovered_config, tmp_path)
-    assert [entry["test"] for entry in discovered_config["test_catalog"]] == [single]
+    assert [
+        entry["test"]
+        for entry in discovered_config["test_catalog"]
+        if selector.runnable_boards(discovered_config, entry)
+    ] == [single]
     output = capsys.readouterr().err
     assert multi in output and "requires 2 devices" in output
+
+
+def test_listed_multi_device_file_with_source_mapping_is_excluded(
+    selector, discovered_config, tmp_path, capsys
+):
+    single = add_device_test(tmp_path, "test_single.py")
+    multi = add_device_test(tmp_path, "test_communication.py", "PPU_CI_MIN_DEVICES = 2")
+    source = tmp_path / "vllm_sail/communication.py"
+    source.parent.mkdir()
+    source.write_text("pass\n")
+    entry = {
+        "id": "communication",
+        "test": multi,
+        "boards": ["ppu15"],
+        "requires": ["deep_gemm", "torch", "triton", "vllm", "vllm_sail"],
+        "board_overrides": {"test_device": ["ppu15"]},
+    }
+    discovered_config["test_catalog"] = [copy.deepcopy(entry)]
+    discovered_config["selection_rules"]["source_to_tests"] = [
+        {
+            "id": "communication-source",
+            "paths": ["vllm_sail/communication.py"],
+            "test_ids": [entry["id"]],
+        }
+    ]
+    selector.validate_config(discovered_config, tmp_path)
+    assert multi in capsys.readouterr().err
+    assert discovered_config["test_catalog"][0] == {**entry, "min_devices": 2}
+    assert discovered_config["selection_rules"]["source_to_tests"][0]["test_ids"] == [
+        entry["id"]
+    ]
+    for paths in (["vllm_sail/communication.py"], [multi], ["csrc/new.cu"]):
+        result = selector.select_tests(discovered_config, paths, **OPTIONS)
+        assert multi not in result["files"]
+        assert "insufficient_devices" in result["reasons"]
+        routes = selector.route_tests(discovered_config, result["test_ids"])
+        assert all(multi not in group["files"] for group in routes["groups"])
+    assert single in result["files"]
+    assert selector.route_tests(discovered_config, [entry["id"]])["groups"] == []
+    before = copy.deepcopy(discovered_config)
+    selector.validate_config(discovered_config, tmp_path)
+    assert discovered_config == before
+    # Lowering the resource requirement restores the original board/dependency policy.
+    (tmp_path / multi).write_text("PPU_CI_MIN_DEVICES = 1\ndef test_device(): pass\n")
+    selector.validate_config(discovered_config, tmp_path)
+    assert discovered_config["test_catalog"][0] == entry
+    result = selector.select_tests(
+        discovered_config, ["vllm_sail/communication.py"], **OPTIONS
+    )
+    assert result["test_ids"] == [entry["id"]]
+    routes = selector.route_tests(discovered_config, result["test_ids"])
+    assert [group["board"] for group in routes["groups"]] == ["ppu15"]
 
 
 @pytest.mark.parametrize("value", ["True", "0", "-1", "'2'", "get_devices()"])
@@ -184,6 +244,66 @@ def test_selection_and_validation_use_the_same_discovered_catalog(
     }
     result = selector.make_selection(**inputs)
     assert result["mode"] == "subset" and result["files"] == [file]
+    assert result["config_sha256"] == selector.checksum(raw)
+    selector.validate_selection(
+        result,
+        raw,
+        inputs["environment_bytes"],
+        tested_sha=inputs["changes"]["tested_sha"],
+        repo=tmp_path,
+        **{
+            key: inputs[key]
+            for key in (
+                "build_run_id",
+                "build_image",
+                "runtime_image",
+                "expected_vllm_commit",
+            )
+        },
+    )
+
+
+@pytest.mark.parametrize("only_multi", [False, True])
+@pytest.mark.parametrize("changed", ["source", "test", "unmapped"])
+def test_resource_exclusions_survive_selection_protocol(
+    selector, discovered_config, selection_inputs, tmp_path, only_multi, changed
+):
+    single = None if only_multi else add_device_test(tmp_path, "test_single.py")
+    multi = add_device_test(tmp_path, "test_multi.py", "PPU_CI_MIN_DEVICES = 2")
+    source = tmp_path / "vllm_sail/communication.py"
+    source.parent.mkdir()
+    source.write_text("pass\n")
+    discovered_config["test_catalog"] = [
+        {
+            "id": "communication",
+            "test": multi,
+            "boards": ["ppu15"],
+            "requires": ["deep_gemm", "torch", "triton", "vllm", "vllm_sail"],
+            "board_overrides": {},
+        }
+    ]
+    discovered_config["selection_rules"]["source_to_tests"] = [
+        {
+            "id": "communication-source",
+            "paths": ["vllm_sail/communication.py"],
+            "test_ids": ["communication"],
+        }
+    ]
+    raw = json.dumps(discovered_config).encode()
+    path = {
+        "source": "vllm_sail/communication.py",
+        "test": multi,
+        "unmapped": "vllm_sail/unknown.py",
+    }[changed]
+    inputs = {
+        **selection_inputs,
+        "config_bytes": raw,
+        "changes": {**selection_inputs["changes"], "paths": [path]},
+        "repo": tmp_path,
+    }
+    result = selector.make_selection(**inputs)
+    assert result["files"] == ([single] if single and changed == "unmapped" else [])
+    assert result["mode"] == ("full" if changed == "unmapped" else "none")
     assert result["config_sha256"] == selector.checksum(raw)
     selector.validate_selection(
         result,
@@ -252,7 +372,13 @@ def test_selection_priority(selector, config, paths, mode, ids):
     result = selector.select_tests(config, paths, **OPTIONS)
     assert result["mode"] == mode
     assert result["test_ids"] == (
-        ids if ids is not None else sorted(t["id"] for t in config["test_catalog"])
+        ids
+        if ids is not None
+        else sorted(
+            t["id"]
+            for t in config["test_catalog"]
+            if selector.runnable_boards(config, t)
+        )
     )
     assert result["files"] == sorted(
         t["test"] for t in config["test_catalog"] if t["id"] in result["test_ids"]

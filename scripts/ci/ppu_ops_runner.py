@@ -568,7 +568,9 @@ def execute(env):
             phase = time.monotonic()
             # Preflight all dependencies for this board to allow safe expansion after environment changes.
             entries = [
-                t for t in config["test_catalog"] if identity["board"] in t["boards"]
+                t
+                for t in config["test_catalog"]
+                if identity["board"] in select.runnable_boards(config, t)
             ]
             child_env["PPU_CI_REQUIRES"] = json.dumps(
                 sorted({r for t in entries for r in t["requires"]})
