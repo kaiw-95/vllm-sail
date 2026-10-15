@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Explicit PPU operator test selection, config validation, and cumulative Git diffs using only the standard library."""
+"""Discover PPU operator tests, apply routing overrides, and select cumulative Git diffs using only the standard library."""
 
 from __future__ import annotations
 
@@ -12,8 +12,10 @@ import json
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parents[2]
 BOARDS = {"ppu10": "OAM-810E", "ppu15": "ZW-M890P"}
 ID_PATTERN = r"[a-z0-9]+(?:-[a-z0-9]+)*"
 IMAGE_PATTERN = r"[a-zA-Z0-9][a-zA-Z0-9._:/-]*@sha256:[0-9a-f]{64}"
@@ -137,11 +139,82 @@ def validate_ut_isolation(repo):
             )
 
 
+def discover_catalog(config, repo):
+    """Add unlisted test files without importing device packages.
+
+    JSON entries retain board/dependency overrides and stable existing IDs.
+    New files default to both boards and the common runtime dependencies.
+    A file can declare a literal PPU_CI_MIN_DEVICES for resource requirements
+    beyond the current single-device runner; exclusions are reported explicitly.
+    """
+    repo = Path(repo).resolve()
+    catalog = config["test_catalog"]
+    require(isinstance(catalog, list), "测试目录必须为数组")
+    listed = set()
+    for item in catalog:
+        require(isinstance(item, dict), "测试配置必须为对象")
+        listed.add(safe_path(item.get("test")))
+    discovered = set()
+    for path in sorted((repo / "tests/e2e").rglob("test_*.py")):
+        require(path.resolve().is_relative_to(repo) and path.is_file(), "测试路径逃逸")
+        relative = path.relative_to(repo).as_posix()
+        devices = 1
+        declarations = []
+        for node in ast.parse(path.read_text(encoding="utf-8")).body:
+            if isinstance(node, ast.Assign):
+                targets = node.targets
+            elif isinstance(node, ast.AnnAssign):
+                targets = [node.target]
+            else:
+                continue
+            if any(
+                isinstance(t, ast.Name) and t.id == "PPU_CI_MIN_DEVICES"
+                for t in targets
+            ):
+                require(
+                    isinstance(node.value, ast.Constant)
+                    and type(node.value.value) is int
+                    and node.value.value > 0,
+                    f"{relative}: PPU_CI_MIN_DEVICES 必须为正整数字面量",
+                )
+                declarations.append(node.value.value)
+        require(len(declarations) <= 1, f"{relative}: 重复设备数量声明")
+        if declarations:
+            devices = declarations[0]
+        boards = sorted(
+            board
+            for board, profile in config["execution_profiles"].items()
+            if profile["nproc_per_node"] >= devices
+        )
+        if not boards:
+            require(relative not in listed, f"{relative}: 显式目录超出执行器设备数量")
+            print(
+                f"PPU CI excludes {relative}: requires {devices} devices; "
+                "current execution profiles cannot run it",
+                file=sys.stderr,
+            )
+            continue
+        discovered.add(relative)
+        if relative not in listed:
+            name = re.sub(r"[^a-z0-9]+", "-", relative[10:-3].lower()).strip("-")
+            catalog.append(
+                {
+                    "id": f"auto-{name}-{checksum(relative.encode())[:8]}",
+                    "test": relative,
+                    "boards": boards,
+                    "requires": ["torch", "triton", "vllm", "vllm_sail"],
+                    "board_overrides": {},
+                }
+            )
+    return discovered
+
+
 def validate_config(config, repo):
     repo = Path(repo).resolve()
     keys(config, ("schema", "selection_rules", "test_catalog", "execution_profiles"))
     require(type(config["schema"]) is int and config["schema"] == 1, "未知 schema")
     validate_profiles(config["execution_profiles"])
+    discovered = discover_catalog(config, repo)
     catalog = config["test_catalog"]
     require(isinstance(catalog, list) and bool(catalog), "缺少测试目录")
     ids, tests = set(), set()
@@ -193,9 +266,6 @@ def validate_config(config, repo):
                 any(board in overrides.get(f, boards) for f in functions),
                 "板型没有适用函数",
             )
-    discovered = {
-        p.relative_to(repo).as_posix() for p in (repo / "tests/e2e").rglob("test_*.py")
-    }
     require(discovered == tests, f"测试目录不完整: {sorted(discovered ^ tests)}")
     rules = config["selection_rules"]
     keys(rules, ("full", "no_effect", "source_to_tests"))
@@ -576,8 +646,10 @@ def make_selection(
     runtime_image,
     expected_vllm_commit,
     force_full,
+    repo=ROOT,
 ):
     config, environment = json.loads(config_bytes), json.loads(environment_bytes)
+    discover_catalog(config, repo)
     qualified = validate_environment(environment)
     validate_changes(changes)
     decimal(build_run_id)
@@ -630,6 +702,7 @@ def validate_selection(
     build_image,
     runtime_image,
     expected_vllm_commit,
+    repo=ROOT,
 ):
     keys(
         selection,
@@ -667,6 +740,7 @@ def validate_selection(
         "环境 checksum 不符",
     )
     config = json.loads(config_bytes)
+    discover_catalog(config, repo)
     environment = json.loads(environment_bytes)
     qualified = validate_environment(environment)
     for name in ("base_sha", "head_sha"):
@@ -827,6 +901,7 @@ def main():
             runtime_image=args.runtime_image,
             expected_vllm_commit=args.expected_vllm_commit,
             force_full=args.scope == "full",
+            repo=args.repo,
         )
     write_json(args.output, result)
     if args.command == "select":

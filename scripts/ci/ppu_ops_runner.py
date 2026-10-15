@@ -392,6 +392,7 @@ def read_inputs(env):
         build_image=env["EXPECTED_BUILD_IMAGE"],
         runtime_image=env["RUNTIME_IMAGE"],
         expected_vllm_commit=env["EXPECTED_VLLM_COMMIT"],
+        repo=ROOT,
     )
     if "DISPATCH_MATRIX" in env:
         require(
@@ -503,6 +504,9 @@ def execute(env):
         with tempfile.TemporaryDirectory(prefix="ppu-ops-", dir="/tmp") as temporary:
             isolated = (Path(temporary) / "isolated").resolve()
             copy_test_tree(ROOT, isolated)
+            # pytest's node guard needs the same discovered catalog as selection.
+            config_path = isolated / "ppu_ops_tests.json"
+            select.write_json(config_path, config)
             child_env = clean_environment(env, ROOT, isolated)
             stage = "install"
             phase = time.monotonic()

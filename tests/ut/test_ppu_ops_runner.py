@@ -153,6 +153,7 @@ def test_nas_prefix_and_missing_mount(runner, monkeypatch):
 def test_runtime_expansion_preserves_other_board(runner):
     config = json.loads((ROOT / "scripts/ci/ppu_ops_tests.json").read_bytes())
     selector = load(ROOT / "scripts/ci/ppu_ops_select.py")
+    selector.discover_catalog(config, ROOT)
     original = {
         "mode": "subset",
         "test_ids": ["kda"],
@@ -161,7 +162,9 @@ def test_runtime_expansion_preserves_other_board(runner):
     }
     effective = runner.effective_selection(config, original, b"original", "ppu10", True)
     assert effective["expanded_boards"] == ["ppu10"]
-    assert len(effective["groups"][0]["files"]) == 13
+    assert effective["groups"][0]["files"] == sorted(
+        t["test"] for t in config["test_catalog"] if "ppu10" in t["boards"]
+    )
     assert "tests/e2e/test_mxfp8_emulation.py" in effective["groups"][0]["files"]
     assert effective["groups"][1] == original["groups"][1]
     assert original["test_ids"] == ["kda"]
@@ -315,7 +318,7 @@ def test_full_inputs_need_no_confirmation(runner, valid_inputs, board):
     raw, _, config, environment, manifest = runner.read_inputs(valid_inputs)
     selection = json.loads(raw)
     assert selection["mode"] == "full"
-    assert len(selection["files"]) == len(config["test_catalog"]) == 15
+    assert selection["files"] == sorted(t["test"] for t in config["test_catalog"])
     assert len(manifest["wheels"]) == 2
     assert environment["qualified"] is False
     assert environment_path.read_bytes() == original_environment
@@ -456,7 +459,11 @@ def test_selection_cli_with_verified_wheels(runner, valid_inputs, tmp_path):
         env={**os.environ, "GITHUB_OUTPUT": str(github_output)},
     )
     assert result.returncode == 0, result.stderr
-    assert len(json.loads(output.read_bytes())["files"]) == 15
+    config = json.loads((tmp_path / "ppu_ops_tests.json").read_bytes())
+    runner.select.discover_catalog(config, ROOT)
+    assert json.loads(output.read_bytes())["files"] == sorted(
+        t["test"] for t in config["test_catalog"]
+    )
     assert "has_tests=true" in github_output.read_text()
 
 
@@ -577,6 +584,10 @@ def test_execute_only_publishes_success_after_complete_evidence(
                 Path(kwargs["env"]["PPU_CI_OBSERVATION"]), observed
             )
             return subprocess.CompletedProcess(command, 0)
+        if command[1:3] == ["-m", "pytest"]:
+            effective_config = Path(command[command.index("--ppu-ci-config") + 1])
+            assert effective_config.parent == Path(kwargs["cwd"])
+            assert json.loads(effective_config.read_bytes())["test_catalog"] == entries
         completed = original_run(command, **kwargs)
         if failure == "missing-report" and "tests/e2e/test_first.py" in command:
             (output / "nodes/first.json").rename(output / "nodes/unexpected.json")
