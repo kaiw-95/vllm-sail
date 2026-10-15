@@ -93,24 +93,6 @@ jobs runs PPU inference or `tests/e2e`.
 
 ## 3. Run device correctness tests
 
-Operator CI discovers `tests/e2e/**/test_*.py` without importing the test modules.
-New files default to both PPU boards and the common runtime dependencies; no
-entry in `scripts/ci/ppu_ops_tests.json` is needed. That file supplies overrides
-for board support, extra SDK dependencies, and source-to-test selection rules.
-
-Source changes listed in `selection_rules.source_to_tests` still select their
-mapped tests. Changes to a discovered test select that file itself. Unmapped
-source changes conservatively select the full discovered catalog, including
-new test files. CPU tests under `tests/ut` continue to use pytest discovery.
-
-Tests requiring multiple devices declare `PPU_CI_MIN_DEVICES = 2` (or a larger
-positive integer) at module scope. The current single-device operator CI reports
-these files as excluded; run them separately with the required devices visible.
-This also applies to files with JSON overrides: their metadata and source
-mappings are retained, but they are excluded from selection, routing and
-dependency preflight until a profile can run them. An exclusion is not device
-verification.
-
 In the PPU environment, install `requirements/dev.txt`. Use an editable native
 plugin build in the checkout, or ensure the test process imports the installed
 wheel as described above. Start with activation and the affected feature:

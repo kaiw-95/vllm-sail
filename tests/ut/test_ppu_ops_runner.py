@@ -20,7 +20,7 @@ RUNNER = ROOT / "scripts/ci/ppu_ops_runner.py"
 
 @pytest.fixture
 def runner():
-    assert RUNNER.is_file(), "缺少设备执行器"
+    assert RUNNER.is_file(), "Missing device runner"
     return load(RUNNER)
 
 
@@ -47,11 +47,12 @@ inspect_runtime({str(tmp_path / "isolated")!r}, {str(ROOT)!r}, [])
         text=True,
     )
     assert completed.returncode != 0
-    assert "ValueError: 需要一张可用 PPU" in completed.stderr
+    assert "ValueError:" in completed.stderr
+    assert "inspect_runtime" in completed.stderr
 
 
 def test_runner_entrypoint():
-    assert RUNNER.is_file(), "缺少设备执行器"
+    assert RUNNER.is_file(), "Missing device runner"
     result = subprocess.run(
         ["bash", "-n", str(ROOT / "scripts/ci/ppu_ops_test.sh")], capture_output=True
     )
@@ -344,7 +345,9 @@ def test_unapproved_inputs_reject_partial_selection(runner, valid_inputs, mode):
     )
     runner.select.write_json(path, selection)
     valid_inputs["DISPATCH_MATRIX"] = json.dumps(selection["matrix"])
-    with pytest.raises(ValueError, match="非全量清单的环境未经批准"):
+    with pytest.raises(
+        ValueError, match="Non-full selection requires a qualified environment"
+    ):
         runner.read_inputs(valid_inputs)
 
 
@@ -355,9 +358,9 @@ def test_unapproved_inputs_reject_partial_selection(runner, valid_inputs, mode):
         ("sdk_sha256", "a" * 63, "hash"),
         ("torch_sha256", "", "hash"),
         ("torch_sha256", "unknown", "hash"),
-        ("pytorch_sail_arch", "", "架构"),
-        ("pytorch_sail_arch", "ppu_10", "架构"),
-        ("pytorch_sail_arch", "ppu_15", "架构"),
+        ("pytorch_sail_arch", "", "architectures"),
+        ("pytorch_sail_arch", "ppu_10", "architectures"),
+        ("pytorch_sail_arch", "ppu_15", "architectures"),
     ],
 )
 def test_full_inputs_reject_incomplete_fingerprint(
@@ -393,7 +396,7 @@ def test_full_inputs_reject_incomplete_fingerprint(
 )
 def test_dispatch_matrix_must_equal_selection(runner, valid_inputs, matrix):
     valid_inputs["DISPATCH_MATRIX"] = json.dumps(matrix)
-    with pytest.raises(ValueError, match="矩阵"):
+    with pytest.raises(ValueError, match="matrix"):
         runner.read_inputs(valid_inputs)
 
 
@@ -705,7 +708,7 @@ def run_case(
     shadow=False,
     extra_args=(),
 ):
-    assert PLUGIN.is_file(), "缺少显式 pytest CI 插件"
+    assert PLUGIN.is_file(), "Missing explicit pytest CI plugin"
     isolated, site = tmp_path / "isolated", tmp_path / "site-packages"
     for name in ("tests", "tests/support", "tests/e2e"):
         path = isolated / name

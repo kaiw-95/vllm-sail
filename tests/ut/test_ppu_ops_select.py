@@ -20,12 +20,12 @@ OPTIONS = dict(diff_complete=True, force_full=False, environment_matches=True)
 
 
 def test_selector_entrypoint_exists():
-    assert SCRIPT.is_file(), "缺少设备选择器入口"
+    assert SCRIPT.is_file(), "Missing device selector entrypoint"
 
 
 @pytest.fixture
 def selector():
-    assert SCRIPT.is_file(), "缺少设备选择器"
+    assert SCRIPT.is_file(), "Missing device selector"
     spec = importlib.util.spec_from_file_location("ppu_ops_select", SCRIPT)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -34,7 +34,7 @@ def selector():
 
 @pytest.fixture
 def config(selector):
-    assert CONFIG.is_file(), "缺少正式测试目录"
+    assert CONFIG.is_file(), "Missing production test catalog"
     config = json.loads(CONFIG.read_text())
     selector.discover_catalog(config, ROOT)
     return config
