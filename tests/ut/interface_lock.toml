@@ -11,7 +11,7 @@
 schema = 1
 vllm_version_range = ">=0.32.0,<0.33.0"
 key_interface_count = 10
-target_count = 287
+target_count = 290
 
 [[key_interface]]
 symbol = "vllm.platforms.interface.PlatformEnum"
@@ -272,6 +272,14 @@ module = "vllm/model_executor/layers/fused_moe/config.py"
 symbol = "int8_w8a8_moe_quant_config"
 present = true
 fingerprint = "sha256:90070b70dde529b1a695bbb97f39f7f004239e093995252aa1620ad312c45290"
+
+[[patch_target]]
+name = "vllm.model_executor.layers.fused_moe.deep_gemm_mega_moe.check_deep_gemm_mega_moe_supported"
+kind = "module"
+module = "vllm/model_executor/layers/fused_moe/deep_gemm_mega_moe.py"
+symbol = "check_deep_gemm_mega_moe_supported"
+present = true
+fingerprint = "sha256:5e60bbedc619f997ac8ad963bb097e7e291f0c162fa280e0cb76ab82279ab4c8"
 
 [[patch_target]]
 name = "vllm.model_executor.layers.fused_moe.experts.fused_batched_moe.moe_kernel_quantize_input"
@@ -1658,12 +1666,28 @@ present = true
 fingerprint = "sha256:5822da201bfeb0832925ce5a5d13986701c954b2b20d5ae1f67e2d116c29f360"
 
 [[patch_target]]
+name = "vllm.models.deepseek_v4.nvidia.model.DeepGemmMegaMoEExperts"
+kind = "module"
+module = "vllm/models/deepseek_v4/nvidia/model.py"
+symbol = "DeepGemmMegaMoEExperts"
+present = true
+fingerprint = "sha256:a34c63a2a31f5747c7d95d7d996d26a45a13080d1a061d9a494451316afe512e"
+
+[[patch_target]]
 name = "vllm.models.deepseek_v4.nvidia.model._select_dsv4_attn_cls"
 kind = "module"
 module = "vllm/models/deepseek_v4/nvidia/model.py"
 symbol = "_select_dsv4_attn_cls"
 present = true
 fingerprint = "sha256:cd9f420e339d3b9ab68d87165c2a97f241aedc28639e1be8e2606fdd8a69cbdb"
+
+[[patch_target]]
+name = "vllm.models.deepseek_v4.nvidia.model.bf16_mega_gate"
+kind = "module"
+module = "vllm/models/deepseek_v4/nvidia/model.py"
+symbol = "bf16_mega_gate"
+present = true
+fingerprint = "sha256:d0e64259262f4f5624ef3e717dc8d11eb172312084e10a06e22a52422f9b11ba"
 
 [[patch_target]]
 name = "vllm.models.deepseek_v41.attention.DeepseekV4Indexer.__init__"
