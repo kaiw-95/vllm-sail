@@ -45,6 +45,7 @@ EXPECTED_MODULES = {
     "deepseek_v41_megamoe",
     "deepseek_v41_mhc",
     "deepseek_v41_sparse",
+    "deepseek_cache_vector",
     "glm5_next",
     "kimi_k3",
     "llama4",

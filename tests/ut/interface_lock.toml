@@ -11,7 +11,7 @@
 schema = 1
 vllm_version_range = ">=0.32.0,<0.33.0"
 key_interface_count = 10
-target_count = 299
+target_count = 302
 
 [[key_interface]]
 symbol = "vllm.platforms.interface.PlatformEnum"
@@ -1738,6 +1738,22 @@ present = true
 fingerprint = "sha256:dd6874d521d8ef2bedb9f3937b4ea7d40ba87b1f3286f7be8f66d583c800a7c7"
 
 [[patch_target]]
+name = "vllm.models.deepseek_v41.common.ops.cache_utils.dequantize_and_gather_k_cache"
+kind = "module"
+module = "vllm/models/deepseek_v41/common/ops/cache_utils.py"
+symbol = "dequantize_and_gather_k_cache"
+present = true
+fingerprint = "sha256:1ed7455254790e3c13883312deb7c6d20d4944e00980cb961f09109e27296545"
+
+[[patch_target]]
+name = "vllm.models.deepseek_v41.common.ops.dequantize_and_gather_k_cache"
+kind = "module"
+module = "vllm/models/deepseek_v41/common/ops/__init__.py"
+symbol = "dequantize_and_gather_k_cache"
+present = true
+fingerprint = "sha256:ed22bfa90c7271b064e2e5c71a17b903fc2abc873a1ac4df486187d0936aaf78"
+
+[[patch_target]]
 name = "vllm.models.deepseek_v41.nvidia.dspark._linear_scale_param_name"
 kind = "module"
 module = "vllm/models/deepseek_v41/nvidia/dspark.py"
@@ -1752,6 +1768,14 @@ module = "vllm/models/deepseek_v41/nvidia/__init__.py"
 symbol = "engram.Engram._create_embedding"
 present = false
 fingerprint = ""
+
+[[patch_target]]
+name = "vllm.models.deepseek_v41.nvidia.flashmla.dequantize_and_gather_k_cache"
+kind = "module"
+module = "vllm/models/deepseek_v41/nvidia/flashmla.py"
+symbol = "dequantize_and_gather_k_cache"
+present = true
+fingerprint = "sha256:97c115636af979ea978c8689cc23873be9299b9099fe6555041a72629063102e"
 
 [[patch_target]]
 name = "vllm.models.deepseek_v41.nvidia.model._linear_scale_param_name"

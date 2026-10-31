@@ -18,3 +18,11 @@ handling and the launch-error query for the SAIL SDK.
 Both license texts and this notice are included in source distributions and
 wheel license metadata, including wheels containing native extensions built
 with these macros.
+
+## DeepSeek vector K-cache gather
+
+`csrc/plugin/deepseek_dequant.hg` adapts the warp-per-token, 16-byte access
+strategy from the Apache-2.0 SGLang-for-sail paged K-cache dequantization
+change `6d0a401b6da21e5cda8c311742884939599c6992`. The vLLM integration adds
+request block-table addressing, tail gather lengths, strided outputs and the
+SAIL PyTorch stable-ABI binding. E4M3 subnormals are preserved.

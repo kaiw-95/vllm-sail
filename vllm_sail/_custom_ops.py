@@ -53,6 +53,29 @@ def is_available() -> bool:
     return _ext_loaded("_C") or _ext_loaded("_moe_C")
 
 
+def has_vector_dequant() -> bool:
+    """Permit a source checkout to fall back when paired with an older wheel."""
+    return _ext_loaded("_C") and hasattr(
+        torch.ops._ppu_C, "deepseek_dequant_gather_vector"
+    )
+
+
+def deepseek_dequant_gather_vector(
+    out, cache, seq_lens, gather_lens, block_table, page_size, offset, max_gather_len
+):
+    _require("_C", "deepseek_dequant_gather_vector")
+    torch.ops._ppu_C.deepseek_dequant_gather_vector(
+        out,
+        cache,
+        seq_lens,
+        gather_lens,
+        block_table,
+        page_size,
+        offset,
+        max_gather_len,
+    )
+
+
 def _require(name: str, op: str) -> None:
     if not _ext_loaded(name):
         raise RuntimeError(

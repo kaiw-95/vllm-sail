@@ -8,7 +8,10 @@ pytestmark = pytest.mark.ppu
 
 @pytest.mark.parametrize("record_bytes", [528, 584])
 @pytest.mark.parametrize("tail_only", [False, True])
-def test_cache_gather_after_preloaded_module(record_bytes, tail_only):
+@pytest.mark.parametrize("vector", [False, True])
+def test_cache_gather_after_preloaded_module(
+    record_bytes, tail_only, vector, monkeypatch
+):
     import torch
     from vllm.models.deepseek_v41.common.ops import cache_utils
 
@@ -17,6 +20,13 @@ def test_cache_gather_after_preloaded_module(record_bytes, tail_only):
     # Reproduce model-module import before the general plugin patches the probe.
     vllm_sail.register_out_of_tree()
     assert not cache_utils.has_cutedsl()
+    monkeypatch.setenv("VLLM_SAIL_DEEPSEEK_VECTOR_DEQUANT", "1" if vector else "0")
+    if vector and record_bytes == 584:
+        from vllm_sail import _custom_ops
+
+        assert _custom_ops.has_vector_dequant(), (
+            "rebuild vllm-sail with the vector gather op"
+        )
 
     blocks, block_size, offset = 4, 64, 3
     mxfp8 = record_bytes == 528
@@ -51,8 +61,13 @@ def test_cache_gather_after_preloaded_module(record_bytes, tail_only):
         )
         data[..., fp8_dim:] = rope.view(torch.uint8)
         reference[..., fp8_dim:] = rope
-    # Each page stores ALL token data, then ALL scales, not interleaved records.
-    packed = torch.cat((data.flatten(1), encoded.flatten(1)), dim=1)
+    # Main uses interleaved V4.1 records; legacy V4 stores a page's whole
+    # data region before the whole scale region.
+    packed = (
+        torch.cat((data, encoded), dim=-1).flatten(1)
+        if mxfp8
+        else torch.cat((data.flatten(1), encoded.flatten(1)), dim=1)
+    )
     cache = packed.reshape(blocks, block_size, record_bytes).cuda()
     table = torch.tensor([[2, 0], [3, 1]], dtype=torch.int32)
     seq_lens = torch.tensor([70, 93], dtype=torch.int32)

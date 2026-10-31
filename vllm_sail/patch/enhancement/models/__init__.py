@@ -40,6 +40,7 @@ from vllm_sail.patch.enhancement.models import (
     deepseek_v41_megamoe,  # noqa: F401
     deepseek_v41_mhc,  # noqa: F401
     deepseek_v41_sparse,  # noqa: F401
+    deepseek_cache_vector,  # noqa: F401
     glm5_next,  # noqa: F401
     kimi_k3,  # noqa: F401
     llama4,  # noqa: F401

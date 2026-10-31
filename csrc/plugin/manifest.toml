@@ -4,7 +4,7 @@ schema = 2
 
 [[extension]]
 name = "_C"
-device_sources = ["csrc/plugin/sampler_bf16.hg"]
+device_sources = ["csrc/plugin/sampler_bf16.hg", "csrc/plugin/deepseek_dequant.hg"]
 bindings = ["csrc/plugin/ppu_bindings.cpp"]
 
 [[extension]]

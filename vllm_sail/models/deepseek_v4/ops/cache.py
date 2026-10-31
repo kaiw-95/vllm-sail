@@ -546,7 +546,50 @@ def register_ops() -> None:
         mutates_args=["out"],
         fake_impl=_dequant_gather_sm80_op_fake,
     )
+    direct_register_custom_op(
+        op_name="ppu_deepseek_dequant_gather_vector",
+        op_func=_dequant_gather_vector_op,
+        mutates_args=["out"],
+        fake_impl=_dequant_gather_vector_fake,
+    )
     _registered = True
 
 
 _registered = False
+
+
+def _dequant_gather_vector_op(
+    out: torch.Tensor,
+    cache: torch.Tensor,
+    seq_lens: torch.Tensor,
+    gather_lens: torch.Tensor,
+    block_table: torch.Tensor,
+    block_size: int,
+    offset: int,
+    max_gather_len: int,
+) -> None:
+    from vllm_sail import _custom_ops
+
+    _custom_ops.deepseek_dequant_gather_vector(
+        out,
+        cache,
+        seq_lens,
+        gather_lens,
+        block_table,
+        block_size,
+        offset,
+        max_gather_len,
+    )
+
+
+def _dequant_gather_vector_fake(
+    out: torch.Tensor,
+    cache: torch.Tensor,
+    seq_lens: torch.Tensor,
+    gather_lens: torch.Tensor,
+    block_table: torch.Tensor,
+    block_size: int,
+    offset: int,
+    max_gather_len: int,
+) -> None:
+    return None

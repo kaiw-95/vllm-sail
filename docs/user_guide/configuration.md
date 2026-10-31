@@ -129,6 +129,22 @@ candidate-consuming layers. The bound includes allocation padding and must be
 large enough for one aligned tile. SAIL sparse decode uses flattened fixed-length
 rows and 512-byte aligned indexer pages, with one logits plan per row chunk.
 
+### Vector K-cache gather
+
+Set `VLLM_SAIL_DEEPSEEK_VECTOR_DEQUANT=1` to request the plugin-owned HGGC
+warp-per-token gather. It defaults to `0` and accepts the corresponding
+`VLLM_PPU_*` alias. Rebuild the plugin wheel to include the
+`deepseek_dequant_gather_vector` operator. An older wheel, another cache format,
+FNUZ, or an unsupported alignment/layout retains the existing gather.
+
+The vector kernel reads the legacy 584-byte record used by V4 and V4.1 on PPU:
+448 FP8 NoPE values, 64 BF16 RoPE values and eight UE8M0 scale/padding bytes.
+It uses 16-byte accesses, 64-bit page/output addressing, request block-table
+strides, tail gather lengths and output offsets. V4.1's interleaved 528-byte
+record and NVFP4 records retain their upstream implementations. Native build,
+correctness, graph replay and performance measurements remain to be completed
+on PPU hardware for these integrations.
+
 ## Compatibility controls
 
 | Variable | Default | Behavior |

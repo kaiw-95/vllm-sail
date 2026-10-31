@@ -8,6 +8,7 @@ from vllm.models.deepseek_v4.common.ops import cache_utils
 from vllm.platforms import current_platform
 
 from vllm_sail.models.deepseek_v4.ops.cache import register_ops
+from vllm_sail.models.deepseek_v4.ops.dequant import try_vector_gather
 from vllm_sail.patch.utils import patch
 
 register_ops()
@@ -17,7 +18,7 @@ _upstream = cache_utils.dequantize_and_gather_k_cache
 @patch(
     "vllm.models.deepseek_v4.common.ops.cache_utils",
     "dequantize_and_gather_k_cache",
-    reason="PPU 1.0 Triton cannot compile the packed cache's hardware FP8 bitcast; use software E4M3 decoding.",
+    reason="PPU packed-cache reads use a guarded warp-vector gather or the existing architecture-specific fallback, including software E4M3 decoding on PPU 1.0.",
     affected_versions=">=0.32.0,<0.33.0",
     remove_when="vLLM exposes packed MLA cache kernel registration or supports software FP8 decoding on PPU 1.0.",
 )
@@ -31,6 +32,17 @@ def dequantize_and_gather_k_cache(
     offset,
     use_fnuz=False,
 ):
+    if current_platform.is_ppu() and try_vector_gather(
+        out,
+        k_cache,
+        seq_lens,
+        gather_lens,
+        block_table,
+        block_size,
+        offset,
+        use_fnuz,
+    ):
+        return None
     if current_platform.is_ppu() and current_platform.is_device_capability((8, 0)):
         assert not use_fnuz, "PPU packed MLA cache uses E4M3FN, not FNUZ"
         return torch.ops.vllm.ppu_deepseek_v4_dequant_gather(
