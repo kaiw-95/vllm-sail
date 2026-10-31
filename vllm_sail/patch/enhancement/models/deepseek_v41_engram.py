@@ -9,7 +9,7 @@ from vllm.triton_utils import tl, triton
 from vllm_sail.patch.utils import PATCH_MARKER, patch
 
 _AFFECTED = ">=0.32.0,<0.33.0"
-_FACTORY = "vllm.models.deepseek_v41.nvidia.engram"
+_FACTORY = "vllm.models.deepseek_v41.common.engram"
 
 
 @patch(
@@ -32,6 +32,7 @@ def _engram_lookup_kernel(
     weight,
     scales,
     ids,
+    sorted_dst,
     out,
     vocab_start,
     vocab_end,
@@ -45,8 +46,11 @@ def _engram_lookup_kernel(
     QUANT_BLOCK: tl.constexpr,
     BLOCK_R: tl.constexpr,
     GRID,
+    SORTED: tl.constexpr,
+    PACKED: tl.constexpr,
+    OUT_STRIDE: tl.constexpr,
 ):
-    """Gather fp8 rows, apply their ue8m0 block scales, write bf16.
+    """Gather FP8 rows using the current upstream sorted/packed contract.
 
     Only this rank's heads are read; padded heads write zeros for all-gather.
     `weight`/`scales` may address pinned host memory through UVA.
@@ -56,16 +60,23 @@ def _engram_lookup_kernel(
     for base in tl.range(tl.program_id(0) * BLOCK_R, num_rows, GRID * BLOCK_R):
         rows = base + tl.arange(0, BLOCK_R)
         valid = rows < num_rows
-        head = HEAD_START + rows % LOCAL_HEADS
-        token = (rows // LOCAL_HEADS).to(tl.int64)
-        index = tl.load(
-            ids + token * ids_stride_t + head * ids_stride_h,
-            mask=valid & (head < TOTAL_HEADS),
-            other=-1,
-        ).to(tl.int64)
-        owned = valid & (head < TOTAL_HEADS)
-        owned &= (index >= vocab_start) & (index < vocab_end)
-        local = tl.where(owned, index - vocab_start, 0)
+        if SORTED:
+            local = tl.load(ids + rows, mask=valid, other=-1).to(tl.int64)
+            dst = tl.load(sorted_dst + rows, mask=valid, other=0).to(tl.int64)
+            owned = (local >= 0) & (local < vocab_end - vocab_start)
+        else:
+            head = HEAD_START + rows % LOCAL_HEADS
+            token = (rows // LOCAL_HEADS).to(tl.int64)
+            index = tl.load(
+                ids + token * ids_stride_t + head * ids_stride_h,
+                mask=valid & (head < TOTAL_HEADS),
+                other=-1,
+            ).to(tl.int64)
+            dst = rows.to(tl.int64)
+            owned = valid & (head < TOTAL_HEADS)
+            owned &= (index >= vocab_start) & (index < vocab_end)
+            local = index - vocab_start
+        local = tl.where(owned, local, 0)
         values = tl.load(
             weight + local[:, None] * DIM + cols[None, :],
             mask=owned[:, None],
@@ -76,19 +87,31 @@ def _engram_lookup_kernel(
             mask=owned[:, None],
             other=0,
         )
-        # PPU MODIFICATION: begin
-        if scales.dtype.element_ty == tl.float32:
-            # PPU channelwise exports store real FP32 row scales.
-            scale = scale.to(tl.float32)
+        if PACKED:
+            tl.static_assert(
+                scales.dtype.element_ty == tl.uint8,
+                "Packed Engram output requires E8M0 byte scales",
+            )
+            width: tl.constexpr = DIM + DIM // QUANT_BLOCK
+            dst = dst // LOCAL_HEADS * OUT_STRIDE + dst % LOCAL_HEADS * width
+            tl.store(
+                out + dst[:, None] + cols[None, :],
+                values.to(tl.uint8, bitcast=True),
+                mask=valid[:, None],
+            )
+            tl.store(
+                out + dst[:, None] + DIM + scale_cols[None, :],
+                scale,
+                mask=valid[:, None] & (cols[None, :] % QUANT_BLOCK == 0),
+            )
         else:
-            # PPU MODIFICATION: end
-            # ue8m0 is a power of two, so its byte *is* the fp32 exponent field.
-            scale = (scale.to(tl.int32) << 23).to(tl.float32, bitcast=True)
-        tl.store(
-            out + rows[:, None] * DIM + cols[None, :],
-            (values.to(tl.float32) * scale).to(tl.bfloat16),
-            mask=valid[:, None],
-        )
+            if scales.dtype.element_ty != tl.float32:
+                scale = (scale.to(tl.int32) << 23).to(tl.float32, bitcast=True)
+            tl.store(
+                out + dst[:, None] * DIM + cols[None, :],
+                (values.to(tl.float32) * scale).to(tl.bfloat16),
+                mask=valid[:, None],
+            )
 
 
 @patch(

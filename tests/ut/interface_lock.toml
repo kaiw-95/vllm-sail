@@ -1730,6 +1730,14 @@ present = true
 fingerprint = "sha256:92c586db8d0f5a8f373e49becd3e61e002d83219f0a623fdce6f580689e677a6"
 
 [[patch_target]]
+name = "vllm.models.deepseek_v41.common.engram.Engram._create_embedding"
+kind = "class"
+module = "vllm/models/deepseek_v41/common/engram.py"
+symbol = "Engram._create_embedding"
+present = true
+fingerprint = "sha256:a6e0b910fddc9e8cb5ff9c0346bf4fd6a1772b22146b49d6a254489873f4ef3f"
+
+[[patch_target]]
 name = "vllm.models.deepseek_v41.common.engram._engram_lookup_kernel"
 kind = "module"
 module = "vllm/models/deepseek_v41/common/engram.py"
@@ -1760,14 +1768,6 @@ module = "vllm/models/deepseek_v41/nvidia/dspark.py"
 symbol = "_linear_scale_param_name"
 present = true
 fingerprint = "sha256:bc15dc888d4f18d5a070bfd7726c770a3de019151590227c63d585a788264374"
-
-[[patch_target]]
-name = "vllm.models.deepseek_v41.nvidia.engram.Engram._create_embedding"
-kind = "class"
-module = "vllm/models/deepseek_v41/nvidia/__init__.py"
-symbol = "engram.Engram._create_embedding"
-present = false
-fingerprint = ""
 
 [[patch_target]]
 name = "vllm.models.deepseek_v41.nvidia.flashmla.dequantize_and_gather_k_cache"

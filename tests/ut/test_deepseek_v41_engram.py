@@ -43,7 +43,7 @@ def test_engram_channelwise_storage_keeps_real_fp32_scales(modules, offload):
             self.weight, self.weight_scale_inv = self._allocate_weights()
             set_weight_attrs(self.weight_scale_inv, {"dummy_weight_value": 127})
 
-    modules("vllm.models.deepseek_v41.nvidia.engram", ParallelEngramEmbedding=Upstream)
+    modules("vllm.models.deepseek_v41.common.engram", ParallelEngramEmbedding=Upstream)
     cls = load_patch(
         "vllm_sail/models/deepseek_v41/engram.py"
     ).ChannelwiseEngramEmbedding
@@ -92,7 +92,7 @@ def test_engram_factory_keeps_offload_and_original_layouts(modules):
             return original
 
     original_factory = Engram._create_embedding
-    factory = modules("vllm.models.deepseek_v41.nvidia.engram", Engram=Engram)
+    factory = modules("vllm.models.deepseek_v41.common.engram", Engram=Engram)
     kernel = modules(
         "vllm.models.deepseek_v41.common.engram", _engram_lookup_kernel=lambda: None
     )

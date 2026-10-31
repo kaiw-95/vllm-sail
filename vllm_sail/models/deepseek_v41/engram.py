@@ -2,7 +2,7 @@
 """Channelwise Engram storage with upstream sharding, UVA and prefetch."""
 
 import torch
-from vllm.models.deepseek_v41.nvidia.engram import ParallelEngramEmbedding
+from vllm.models.deepseek_v41.common.engram import ParallelEngramEmbedding
 
 
 class ChannelwiseEngramEmbedding(ParallelEngramEmbedding):
