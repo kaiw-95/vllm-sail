@@ -11,7 +11,7 @@
 schema = 1
 vllm_version_range = ">=0.32.0,<0.33.0"
 key_interface_count = 10
-target_count = 304
+target_count = 305
 
 [[key_interface]]
 symbol = "vllm.platforms.interface.PlatformEnum"
@@ -1760,6 +1760,14 @@ module = "vllm/models/deepseek_v41/common/engram.py"
 symbol = "_engram_lookup_kernel"
 present = true
 fingerprint = "sha256:dd6874d521d8ef2bedb9f3937b4ea7d40ba87b1f3286f7be8f66d583c800a7c7"
+
+[[patch_target]]
+name = "vllm.models.deepseek_v41.common.engram._engram_lookup_thresholds"
+kind = "module"
+module = "vllm/models/deepseek_v41/common/engram.py"
+symbol = "_engram_lookup_thresholds"
+present = true
+fingerprint = "sha256:2916a4b42f822ecd244de6ae00e96ac54e4054640d6dd088ca441c1f1caffb12"
 
 [[patch_target]]
 name = "vllm.models.deepseek_v41.common.ops.cache_utils.dequantize_and_gather_k_cache"

@@ -36,7 +36,7 @@ BOOL_DEFAULTS = {
 BACKENDS = ("MOE_BACKEND", "DENSE_BACKEND")
 # String env vars with a non-None default and no legacy VLLM_PPU_* alias.
 STRING_DEFAULTS = {"KPOOL_DECODE_LOGITS": "non_paged"}
-INT_DEFAULTS = {"KPOOL_MAX_DENSE_POOLS": 1 << 21}
+INT_DEFAULTS = {"KPOOL_MAX_DENSE_POOLS": 1 << 21, "ENGRAM_HOST_SORT_MIN_ROWS": 0}
 
 
 @pytest.fixture(autouse=True)
@@ -59,6 +59,21 @@ def test_defaults_and_canonical_snapshot() -> None:
     assert set(envs.environment_variables) == set(expected)
     for suffix in (*BOOL_DEFAULTS, *BACKENDS):
         assert getattr(envs, f"VLLM_PPU_{suffix}") == expected[f"VLLM_SAIL_{suffix}"]
+
+
+def test_engram_sort_threshold_is_lazy_and_zero_overrides_alias(monkeypatch):
+    sail = "VLLM_SAIL_ENGRAM_HOST_SORT_MIN_ROWS"
+    ppu = "VLLM_PPU_ENGRAM_HOST_SORT_MIN_ROWS"
+    monkeypatch.setenv(ppu, "32768")
+    assert envs.VLLM_SAIL_ENGRAM_HOST_SORT_MIN_ROWS == 32768
+    monkeypatch.setenv(sail, "0")
+    assert envs.VLLM_PPU_ENGRAM_HOST_SORT_MIN_ROWS == 0
+    monkeypatch.setenv(sail, "128")
+    assert envs.VLLM_PPU_ENGRAM_HOST_SORT_MIN_ROWS == 128
+    for invalid in ("-1", "1.5", "many"):
+        monkeypatch.setenv(sail, invalid)
+        with pytest.raises(ValueError, match=sail):
+            envs.snapshot()
 
 
 @pytest.mark.parametrize("suffix", BOOL_DEFAULTS)

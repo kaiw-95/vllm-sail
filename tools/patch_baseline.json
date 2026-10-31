@@ -210,6 +210,7 @@
   "vllm.models.deepseek_v41.attention.DeepseekV4IndexerCache.get_kv_cache_spec": "116ef3365a15baf209c341d462848e5ecb9775688ffd3b718ca67f244fbcea9d",
   "vllm.models.deepseek_v41.common.engram.Engram._create_embedding": "ef2909d6afcc990d4a36677768da25e46f8f88bf779830469a143c436f42ae5c",
   "vllm.models.deepseek_v41.common.engram._engram_lookup_kernel": "additive",
+  "vllm.models.deepseek_v41.common.engram._engram_lookup_thresholds": "2d2df2269584b1d1fb1b5e1a34637fbcd31ce7971449dec24648fd51f479a6bf",
   "vllm.models.deepseek_v41.common.ops.cache_utils.dequantize_and_gather_k_cache": "d099d9cc995b301cc9796243549b9f1207aacda0c586823d35d724fafa3fd0cc",
   "vllm.models.deepseek_v41.common.ops.dequantize_and_gather_k_cache": "d099d9cc995b301cc9796243549b9f1207aacda0c586823d35d724fafa3fd0cc",
   "vllm.models.deepseek_v41.nvidia.dspark._linear_scale_param_name": "635ae8b2f0e34ed7d756a2f37f1523dfc8f6624c0c07f56695f72f95d2f167c4",

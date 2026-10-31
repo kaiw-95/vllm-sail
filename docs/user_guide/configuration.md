@@ -123,6 +123,23 @@ warmup registration compiles both serial and tiled post when this flag is
 enabled. If JIT warmup is disabled, warm the enabled shapes eagerly before
 graph capture. PPU numerical and performance validation is pending.
 
+### Engram host-table reads
+
+Set `VLLM_SAIL_ENGRAM_HOST_SORT_MIN_ROWS` to a positive row count to read
+offloaded V4.1 Engram tables in address order once a rank's lookup reaches
+that size. Rows count token/head pairs, including padded local heads. This
+reuses vLLM's sort and inverse destination mapping, following
+[SGLang 3193f83](https://github.com/flytiger-eco/sglang-for-sail/commit/3193f83c4395f31a450c7c5364eb491a77e06389).
+FP32 channelwise scales, E8M0 scales and zero rows for unowned heads retain
+their respective formats and behavior.
+
+The default `0` disables this policy; the corresponding `VLLM_PPU_*` alias is
+accepted. Device-resident and packed huge-page tables retain their existing
+schedule. Enable and tune this on machines without host-page-table translation
+(ATS), where random host reads can miss the device TLB. The plugin does not
+probe ATS or select a performance threshold automatically. Sorting cost,
+numerical parity and graph replay remain to be measured on PPU hardware.
+
 ### Candidate indexer
 
 Use `--attention-config '{"indexer_kv_dtype":"mxfp4","indexer_sparse_logits":true}'`

@@ -41,6 +41,7 @@ EXPECTED_MODULES = {
     "deepseek_v4_compressor",
     "deepseek_v41",
     "deepseek_v41_engram",
+    "deepseek_v41_engram_host",
     "deepseek_v41_indexer",
     "deepseek_v41_megamoe",
     "deepseek_v41_mhc",

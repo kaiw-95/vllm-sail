@@ -37,6 +37,7 @@ if TYPE_CHECKING:
     VLLM_SAIL_USE_PLA: bool = True
     VLLM_SAIL_DEEPSEEK_V41_MEGA_MHC: bool = False
     VLLM_SAIL_MHC_POST_TILED: bool = False
+    VLLM_SAIL_ENGRAM_HOST_SORT_MIN_ROWS: int = 0
     VLLM_SAIL_DEEPSEEK_VECTOR_DEQUANT: bool = False
     VLLM_SAIL_DEEPGEMM_MOE_TP_FUSED: bool = False
     VLLM_SAIL_DEEPGEMM_MOE_FUSED_ACT_QUANT: bool = False
@@ -62,6 +63,7 @@ if TYPE_CHECKING:
     VLLM_PPU_USE_PLA: bool = True
     VLLM_PPU_DEEPSEEK_V41_MEGA_MHC: bool = False
     VLLM_PPU_MHC_POST_TILED: bool = False
+    VLLM_PPU_ENGRAM_HOST_SORT_MIN_ROWS: int = 0
     VLLM_PPU_DEEPSEEK_VECTOR_DEQUANT: bool = False
     VLLM_PPU_DEEPGEMM_MOE_TP_FUSED: bool = False
     VLLM_PPU_DEEPGEMM_MOE_FUSED_ACT_QUANT: bool = False
@@ -148,7 +150,28 @@ def _positive_int(name: str, default: int) -> Callable[[], int]:
     return _get
 
 
+def _nonnegative_int(name: str, default: int) -> Callable[[], int]:
+    """Read a row threshold; zero disables the optional schedule."""
+
+    def _get() -> int:
+        source, raw = _read_env(name)
+        if raw is None or raw.strip() == "":
+            return default
+        try:
+            value = int(raw)
+        except ValueError as exc:
+            raise ValueError(f"Expected an integer for {source}, got {raw!r}.") from exc
+        if value < 0:
+            raise ValueError(f"{source} must be nonnegative, got {value}.")
+        return value
+
+    return _get
+
+
 environment_variables: dict[str, Callable[[], Any]] = {
+    "VLLM_SAIL_ENGRAM_HOST_SORT_MIN_ROWS": _nonnegative_int(
+        "VLLM_SAIL_ENGRAM_HOST_SORT_MIN_ROWS", 0
+    ),
     "VLLM_SAIL_MHC_POST_TILED": _bool("VLLM_SAIL_MHC_POST_TILED", False),
     "VLLM_SAIL_DEEPSEEK_V41_MEGA_MHC": _bool("VLLM_SAIL_DEEPSEEK_V41_MEGA_MHC", False),
     "VLLM_SAIL_DEEPSEEK_VECTOR_DEQUANT": _bool(
