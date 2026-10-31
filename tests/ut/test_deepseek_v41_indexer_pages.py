@@ -21,6 +21,8 @@ def test_indexer_publishes_geometry_and_physical_pages(modules, ppu, ratio):
         page_size_padded: int | None = 33792
         indexer_n_head: int | None = None
         indexer_q_head_dim: int | None = None
+        alignment: int = 576
+        block_stride_alignment: int | None = None
 
     class Cache:
         def get_kv_cache_spec(self, config):
@@ -46,6 +48,7 @@ def test_indexer_publishes_geometry_and_physical_pages(modules, ppu, ratio):
     modules("vllm.v1.attention.backends.mla.indexer", DeepseekV41IndexerBackend=Backend)
     harness.load_patch("vllm_sail/patch/enhancement/models/deepseek_v41_indexer.py")
     cache = Cache()
+    cache.sparse_logits = False
     cache.compress_ratio = ratio
     Indexer(cache)
     spec = cache.get_kv_cache_spec(object())

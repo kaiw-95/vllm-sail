@@ -33,7 +33,6 @@ if current_platform.is_ppu():
         fp8_paged_mqa_logits,
         int8_mqa_logits,
         int8_paged_mqa_logits,
-        is_deep_gemm_supported,
     )
 
 logger = init_logger(__name__)
@@ -43,6 +42,181 @@ RADIX_TOPK_WORKSPACE_SIZE = 1024 * 1024
 
 # MXFP4 layout: 2 values packed per byte, ue8m0 (1-byte) scale per block of 32.
 MXFP4_BLOCK_SIZE = 32
+
+
+def _paged_topk_chunks(
+    q,
+    scales,
+    cache,
+    weights,
+    lengths,
+    block_table,
+    max_model_len,
+    topk,
+    output,
+    candidates,
+    candidate_size,
+    candidate_write,
+):
+    """Score and consume one fixed-length plan at a time; never join logits."""
+    import deep_gemm
+
+    from vllm_sail.utils.deep_gemm import get_paged_mqa_logits_metadata
+    from vllm_sail.utils.indexer import logits_rows_per_chunk
+
+    batch, next_n, heads, packed_dim = q.shape
+    rows = logits_rows_per_chunk(
+        max_model_len,
+        envs.VLLM_SPARSE_INDEXER_MAX_LOGITS_MB,
+        element_size=4,
+        row_alignment=next_n,
+    )
+    step = rows // next_n
+    for start in range(0, batch, step):
+        stop = min(start + step, batch)
+        tile = slice(start * next_n, stop * next_n)
+        lens = lengths[start:stop].contiguous()
+        metadata = get_paged_mqa_logits_metadata(
+            lens,
+            cache.shape[1],
+            deep_gemm.get_num_sms(),
+            (next_n, heads, packed_dim * 2, 1) if scales is not None else None,
+        )
+        if scales is not None:
+            logits = fp8_fp4_paged_mqa_logits(
+                (q[start:stop].contiguous(), scales[start:stop].contiguous()),
+                cache,
+                weights[tile].contiguous(),
+                lens,
+                block_table[start:stop],
+                metadata,
+                max_model_len=max_model_len,
+                clean_logits=False,
+            )
+        else:
+            kernel = (
+                int8_paged_mqa_logits if q.dtype == torch.int8 else fp8_paged_mqa_logits
+            )
+            logits = kernel(
+                q[start:stop].contiguous(),
+                cache,
+                weights[tile].contiguous(),
+                lens,
+                block_table[start:stop],
+                metadata,
+                max_model_len=max_model_len,
+                clean_logits=False,
+            )
+        if candidates is not None:
+            _filter_candidates(
+                logits,
+                None,
+                lens.reshape(-1),
+                candidates[tile],
+                candidate_size,
+                candidate_write,
+                1,
+            )
+        target = output[tile]
+        contiguous = (
+            target
+            if target.is_contiguous()
+            else torch.empty_like(target, memory_format=torch.contiguous_format)
+        )
+        torch.ops._C.top_k_per_row_decode(
+            logits,
+            next_n,
+            lens,
+            contiguous,
+            logits.shape[0],
+            logits.stride(0),
+            logits.stride(1),
+            topk,
+        )
+        if contiguous is not target:
+            target.copy_(contiguous)
+        del logits
+
+
+def _prefill_topk_chunks(
+    q,
+    scales,
+    k,
+    k_scales,
+    weights,
+    starts,
+    ends,
+    topk,
+    output,
+    candidates,
+    candidate_size,
+    candidate_write,
+):
+    from vllm_sail.utils.indexer import logits_rows_per_chunk
+
+    # Non-compressed SAIL logits pads Q to four rows and K by one KV tile
+    # before the 1024B stride alignment. The largest supported FP4 KV tile is 256.
+    step = logits_rows_per_chunk(
+        k.shape[0] + 256,
+        envs.VLLM_SPARSE_INDEXER_MAX_LOGITS_MB,
+        element_size=2 if scales is not None else 4,
+        row_alignment=4,
+    )
+    for start in range(0, q.shape[0], step):
+        tile = slice(start, min(start + step, q.shape[0]))
+        if scales is not None:
+            logits = fp8_fp4_mqa_logits(
+                (q[tile].contiguous(), scales[tile].contiguous()),
+                (k, k_scales),
+                weights[tile].contiguous(),
+                starts[tile],
+                ends[tile],
+                clean_logits=False,
+                logits_dtype=torch.bfloat16,
+            )
+        else:
+            kernel = int8_mqa_logits if q.dtype == torch.int8 else fp8_mqa_logits
+            logits = kernel(
+                q[tile].contiguous(),
+                (k, k_scales),
+                weights[tile].contiguous(),
+                starts[tile],
+                ends[tile],
+                clean_logits=False,
+            )
+        if candidates is not None:
+            _filter_candidates(
+                logits,
+                starts[tile],
+                ends[tile],
+                candidates[tile],
+                candidate_size,
+                candidate_write,
+            )
+        target = output[tile]
+        contiguous = (
+            target
+            if target.is_contiguous()
+            else torch.empty_like(target, memory_format=torch.contiguous_format)
+        )
+        select = (
+            sail_ops.top_k_per_row_prefill_bf16
+            if scales is not None
+            else torch.ops._C.top_k_per_row_prefill
+        )
+        select(
+            logits,
+            starts[tile],
+            ends[tile],
+            contiguous,
+            logits.shape[0],
+            logits.stride(0),
+            logits.stride(1),
+            topk,
+        )
+        if contiguous is not target:
+            target.copy_(contiguous)
+        del logits
 
 
 @triton.jit
@@ -304,79 +478,22 @@ def ppu_sparse_attn_indexer(
                 k_quant_cast = k_quant
                 k_scale_cast = k_scale.view(torch.float32).squeeze(-1)
 
-            if is_deep_gemm_supported():
-                if use_fp4_cache:
-                    logits = fp8_fp4_mqa_logits(
-                        (q_slice_cast, q_scale_slice),
-                        (k_quant_cast, k_scale_cast),
-                        weights[chunk.token_start : chunk.token_end],
-                        chunk.cu_seqlen_ks,
-                        chunk.cu_seqlen_ke,
-                        clean_logits=False,
-                        logits_dtype=torch.bfloat16,
-                    )
-                elif q_dtype == torch.int8:
-                    logits = int8_mqa_logits(
-                        q_slice_cast,
-                        (k_quant_cast, k_scale_cast),
-                        weights[chunk.token_start : chunk.token_end],
-                        chunk.cu_seqlen_ks,
-                        chunk.cu_seqlen_ke,
-                        clean_logits=False,
-                    )
-                elif q_dtype == torch.float8_e4m3fn:
-                    logits = fp8_mqa_logits(
-                        q_slice_cast,
-                        (k_quant_cast, k_scale_cast),
-                        weights[chunk.token_start : chunk.token_end],
-                        chunk.cu_seqlen_ks,
-                        chunk.cu_seqlen_ke,
-                        clean_logits=False,
-                    )
-                else:
-                    raise RuntimeError(
-                        f"PPU mqa_logits get unsupported q_dtype: {q_dtype}"
-                    )
-            else:
-                raise RuntimeError("indexer need PPU deep gemm installed")
-
-            num_rows = logits.shape[0]
-            if candidate_blocks is not None:
-                _filter_candidates(
-                    logits,
-                    chunk.cu_seqlen_ks,
-                    chunk.cu_seqlen_ke,
-                    candidate_blocks[chunk.token_start : chunk.token_end],
-                    candidate_block_size,
-                    candidate_write,
-                )
-
-            topk_indices = topk_indices_buffer[
-                chunk.token_start : chunk.token_end, :topk_tokens
-            ]
-
-            if logits.dtype == torch.bfloat16:
-                sail_ops.top_k_per_row_prefill_bf16(
-                    logits,
-                    chunk.cu_seqlen_ks,
-                    chunk.cu_seqlen_ke,
-                    topk_indices,
-                    num_rows,
-                    logits.stride(0),
-                    logits.stride(1),
-                    topk_tokens,
-                )
-            else:
-                torch.ops._C.top_k_per_row_prefill(
-                    logits,
-                    chunk.cu_seqlen_ks,
-                    chunk.cu_seqlen_ke,
-                    topk_indices,
-                    num_rows,
-                    logits.stride(0),
-                    logits.stride(1),
-                    topk_tokens,
-                )
+            _prefill_topk_chunks(
+                q_slice_cast,
+                q_scale_slice,
+                k_quant_cast,
+                k_scale_cast,
+                weights[chunk.token_start : chunk.token_end],
+                chunk.cu_seqlen_ks,
+                chunk.cu_seqlen_ke,
+                topk_tokens,
+                topk_indices_buffer[chunk.token_start : chunk.token_end, :topk_tokens],
+                candidate_blocks[chunk.token_start : chunk.token_end]
+                if candidate_blocks is not None
+                else None,
+                candidate_block_size,
+                candidate_write,
+            )
 
     if has_decode:
         decode_metadata = attn_metadata_narrowed.decode
@@ -429,85 +546,21 @@ def ppu_sparse_attn_indexer(
             else padded_q_quant_decode_tokens
         )
 
-        if is_deep_gemm_supported():
-            if use_fp4_cache:
-                logits = fp8_fp4_paged_mqa_logits(
-                    (padded_q_quant_cast, padded_q_scale),
-                    kv_cache,
-                    weights[:num_padded_tokens],
-                    seq_lens,
-                    decode_metadata.block_table,
-                    decode_metadata.schedule_metadata,
-                    max_model_len=max_model_len,
-                    clean_logits=False,
-                )
-            elif q_dtype == torch.int8:
-                logits = int8_paged_mqa_logits(
-                    padded_q_quant_cast,
-                    kv_cache,
-                    weights[:num_padded_tokens],
-                    seq_lens,
-                    decode_metadata.block_table,
-                    decode_metadata.schedule_metadata,
-                    max_model_len=max_model_len,
-                    clean_logits=False,
-                )
-            elif q_dtype == torch.float8_e4m3fn:
-                logits = fp8_paged_mqa_logits(
-                    padded_q_quant_cast,
-                    kv_cache,
-                    weights[:num_padded_tokens],
-                    seq_lens,
-                    decode_metadata.block_table,
-                    decode_metadata.schedule_metadata,
-                    max_model_len=max_model_len,
-                    clean_logits=False,
-                )
-            else:
-                raise RuntimeError(
-                    f"PPU paged mqa_logits get unsupported q_dtype: {q_dtype}"
-                )
-        else:
-            raise RuntimeError("indexer need ppu deep gemm installed")
-        num_rows = logits.shape[0]
-        if candidate_blocks is not None:
-            vis = seq_lens.reshape(-1)
-            row_repeat = next_n if vis.numel() != num_rows else 1
-            _filter_candidates(
-                logits,
-                None,
-                vis[:num_rows],
-                candidate_blocks[:num_rows],
-                candidate_block_size,
-                candidate_write,
-                row_repeat,
-            )
+        _paged_topk_chunks(
+            padded_q_quant_cast,
+            padded_q_scale,
+            kv_cache,
+            weights,
+            seq_lens,
+            decode_metadata.block_table,
+            max_model_len,
+            topk_tokens,
+            topk_indices_buffer[:num_padded_tokens, :topk_tokens],
+            candidate_blocks,
+            candidate_block_size,
+            candidate_write,
+        )
         topk_indices = topk_indices_buffer[:num_padded_tokens, :topk_tokens]
-
-        if topk_tokens in (512, 1024, 2048):
-            workspace_manager = current_workspace_manager()
-            (topk_workspace,) = workspace_manager.get_simultaneous(
-                ((RADIX_TOPK_WORKSPACE_SIZE,), torch.uint8),
-            )
-            torch.ops._C.persistent_topk(
-                logits,
-                seq_lens,
-                topk_indices,
-                topk_workspace,
-                topk_tokens,
-                attn_metadata_narrowed.max_seq_len,
-            )
-        else:
-            torch.ops._C.top_k_per_row_decode(
-                logits,
-                next_n,
-                seq_lens,
-                topk_indices,
-                num_rows,
-                logits.stride(0),
-                logits.stride(1),
-                topk_tokens,
-            )
 
         if decode_metadata.requires_padding:
             # if padded, we need to unpack

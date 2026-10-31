@@ -22,6 +22,8 @@ void top_k_per_row_prefill_bf16(const torch::stable::Tensor& logits,
   STD_TORCH_CHECK(
       logits.scalar_type() == torch::headeronly::ScalarType::BFloat16,
       "BF16 top-k prefill requires bf16 input");
+  STD_TORCH_CHECK(topK > 0 && topK <= kBF16MaxTopK,
+                  "BF16 top-k supports 1 through 2048 output indices");
 
   const hggcStream_t stream = get_current_cuda_stream();
   const auto numColumns = logits.size(1);
@@ -37,7 +39,8 @@ void top_k_per_row_prefill_bf16(const torch::stable::Tensor& logits,
     static bool smemConfigured = false;
     if (!smemConfigured) {
       VLLM_DevFuncAttribute_SET_MaxDynamicSharedMemorySize(
-          topKPerRowPrefillBF16Register, smemBytes);
+          topKPerRowPrefillBF16Register,
+          sizeof(BF16RegisterSmem) + kBF16MaxTopK * sizeof(int32_t));
       smemConfigured = true;
     }
 
@@ -55,7 +58,8 @@ void top_k_per_row_prefill_bf16(const torch::stable::Tensor& logits,
     static bool smemConfigured = false;
     if (!smemConfigured) {
       VLLM_DevFuncAttribute_SET_MaxDynamicSharedMemorySize(
-          topKPerRowPrefillBF16Stream, smemBytes);
+          topKPerRowPrefillBF16Stream,
+          sizeof(BF16StreamSmem) + kBF16MaxTopK * sizeof(int32_t));
       smemConfigured = true;
     }
 

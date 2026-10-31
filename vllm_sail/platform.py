@@ -202,24 +202,44 @@ class PPUPlatform(NvmlCudaPlatform):
         # Registering PPU custom ops here (rather than at plugin import) keeps
         # the registration after torch and the platform are both initialised.
         from vllm_sail import ops  # noqa: F401
-
         from vllm_sail.models.deepseek_v41.config import normalize_expert_dtype
 
         normalize_expert_dtype(vllm_config)
+
+        if vllm_config.attention_config.indexer_sparse_logits:
+            from vllm_sail.utils.indexer import sparse_indexer_supported
+
+            if not sparse_indexer_supported(vllm_config):
+                logger.warning_once(
+                    "SAIL sparse indexer unavailable for this device/API/config; "
+                    "using dense candidate-block logits. It requires M890, "
+                    "MXFP4 indexer H=32/D=128, DeepGEMM sparse APIs, auto top-k "
+                    "and no context parallelism."
+                )
+                vllm_config.attention_config.indexer_sparse_logits = False
 
         if vllm_config.kernel_config.moe_backend == "deep_gemm_mega_moe":
             from vllm_sail.utils.deep_gemm_mega import check_mega_moe_supported
 
             config = vllm_config.model_config.hf_text_config
-            if config.model_type not in ("deepseek_v4", "deepseek_v41", "deepseek_v41_text"):
-                raise ValueError("SAIL MegaMoE is integrated with DeepSeek V4/V4.1 only.")
+            if config.model_type not in (
+                "deepseek_v4",
+                "deepseek_v41",
+                "deepseek_v41_text",
+            ):
+                raise ValueError(
+                    "SAIL MegaMoE is integrated with DeepSeek V4/V4.1 only."
+                )
             if getattr(config, "expert_dtype", "fp4") != "fp4":
-                raise ValueError("SAIL MegaMoE requires MXFP4 experts (expert_dtype=fp4).")
+                raise ValueError(
+                    "SAIL MegaMoE requires MXFP4 experts (expert_dtype=fp4)."
+                )
             import torch
 
             check_mega_moe_supported(
                 torch.device("cuda", torch.cuda.current_device()),
-                config.hidden_size, config.moe_intermediate_size,
+                config.hidden_size,
+                config.moe_intermediate_size,
             )
 
         compilation_config = vllm_config.compilation_config

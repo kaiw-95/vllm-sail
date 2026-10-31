@@ -45,7 +45,8 @@ static constexpr int kBF16SizePerStage =
 static constexpr int kBF16CpAsyncBytes =
     kBF16ElemPerStage * static_cast<int>(sizeof(__ppu_bfloat16));  // 16
 
-static constexpr int kBF16MaxTies = 1024;
+static constexpr int kBF16MaxTopK = 2048;
+static constexpr int kBF16MaxTies = kBF16MaxTopK;
 static constexpr int kBF16Max1PassLen = 16384;
 static constexpr int kBF16Max2PassLen = 2 * kBF16Max1PassLen;  // 32768
 static constexpr int kBF16VecsPerThread = 4;
@@ -220,7 +221,9 @@ static __device__ void bf16TieHandle(int32_t* __restrict__ sTopK, int topK,
   bool needTiebreak = (numAbove + numEqual > static_cast<uint32_t>(topK));
 
   auto isGreater = [](const BF16TieEntry& a, const BF16TieEntry& b) {
-    return (a.score > b.score) || (a.score == b.score && a.idx < b.idx);
+    if (a.score > b.score) return true;
+    if (a.score < b.score) return false;
+    return a.idx < b.idx;
   };
 
   if (topkRemain == 0u) {
@@ -686,7 +689,9 @@ static __device__ void bf16RegisterTopK(
   uint32_t topkRemain = static_cast<uint32_t>(topK) - numAbove;
 
   auto isGreater = [](const BF16TieEntry& a, const BF16TieEntry& b) {
-    return (a.score > b.score) || (a.score == b.score && a.idx < b.idx);
+    if (a.score > b.score) return true;
+    if (a.score < b.score) return false;
+    return a.idx < b.idx;
   };
 
   if (numTies <= 32u) {
@@ -753,6 +758,76 @@ static __device__ void bf16RegisterTopK(
 }
 
 // ============================================================
+// Exact overflow selection. A coarse FP16 bin can contain more than the tie
+// buffer's capacity and several distinct BF16 values. Refine the full BF16
+// ordering in two 8-bit histogram passes, then use a block scan to keep the
+// earliest positions at the exact threshold. Scratch reuses the histogram.
+// ============================================================
+
+static __device__ uint32_t bf16OrderedKey(__ppu_bfloat16 value) {
+  uint32_t bits = __float_as_uint(__bfloat162float(value)) >> 16;
+  if ((bits & 0x7fffu) > 0x7f80u) return 0;  // NaNs follow numeric scores.
+  if ((bits & 0x7fffu) == 0) return 0x8000u;  // Signed zeros tie.
+  return (bits & 0x8000u) ? ((~bits) & 0xffffu) : (bits ^ 0x8000u);
+}
+
+template <typename SmemT>
+static __device__ void bf16ExactOverflowTopK(
+    const __ppu_bfloat16* scores, uint32_t length, int topK,
+    int32_t* output, SmemT* smem) {
+  const uint32_t tx = threadIdx.x;
+  if (tx == 0) smem->match.aboveCount = 0;
+  __syncthreads();
+  for (int shift = 8; shift >= 0; shift -= 8) {
+    if (tx < 256) smem->histogram[tx] = 0;
+    __syncthreads();
+    const uint32_t high = smem->match.bin;
+    for (uint32_t i = tx; i < length; i += kBF16BlockSize) {
+      const uint32_t key = bf16OrderedKey(scores[i]);
+      if (shift == 8 || (key & 0xff00u) == high)
+        atomicAdd(&smem->histogram[(key >> shift) & 255u], 1u);
+    }
+    __syncthreads();
+    if (tx == 0) {
+      const uint32_t remaining = static_cast<uint32_t>(topK) - smem->match.aboveCount;
+      uint32_t above = 0;
+      for (int bin = 255; bin >= 0; --bin) {
+        const uint32_t count = smem->histogram[bin];
+        if (above + count >= remaining) {
+          smem->match.bin = shift == 8 ? static_cast<uint32_t>(bin) << 8
+                                      : high | static_cast<uint32_t>(bin);
+          smem->match.aboveCount += above;
+          break;
+        }
+        above += count;
+      }
+    }
+    __syncthreads();
+  }
+  using Scan = cub::BlockScan<uint32_t, kBF16BlockSize>;
+  static_assert(sizeof(typename Scan::TempStorage) <= sizeof(smem->histogram));
+  auto& scan = *reinterpret_cast<typename Scan::TempStorage*>(smem->histogram);
+  const uint32_t threshold = smem->match.bin;
+  const uint32_t above = smem->match.aboveCount;
+  if (tx == 0) smem->counterGt = smem->counterEq = 0;
+  __syncthreads();
+  for (uint32_t base = 0; base < length; base += kBF16BlockSize) {
+    const uint32_t i = base + tx;
+    const uint32_t key = i < length ? bf16OrderedKey(scores[i]) : 0;
+    const uint32_t equal = i < length && key == threshold;
+    uint32_t prefix, count;
+    Scan(scan).ExclusiveSum(equal, prefix, count);
+    if (equal && smem->counterEq + prefix < static_cast<uint32_t>(topK) - above)
+      output[above + smem->counterEq + prefix] = static_cast<int32_t>(i);
+    if (i < length && key > threshold)
+      output[atomicAdd(&smem->counterGt, 1u)] = static_cast<int32_t>(i);
+    __syncthreads();
+    if (tx == 0) smem->counterEq += count;
+    __syncthreads();
+  }
+}
+
+// ============================================================
 // Kernel: register path (rows <= 32K)
 // ============================================================
 
@@ -778,11 +853,8 @@ static __global__ __launch_bounds__(kBF16BlockSize, 1)
   int* out = outIndices + static_cast<int64_t>(rowIdx) * topK;
 
   if (length <= static_cast<uint32_t>(topK)) {
-    uint32_t tx = threadIdx.x;
-    if (tx < length) {
-      out[tx] = tx;
-    } else if (tx < static_cast<uint32_t>(topK)) {
-      out[tx] = -1;
+    for (uint32_t tx = threadIdx.x; tx < static_cast<uint32_t>(topK); tx += kBF16BlockSize) {
+      out[tx] = tx < length ? static_cast<int>(tx) : -1;
     }
     return;
   }
@@ -802,6 +874,10 @@ static __global__ __launch_bounds__(kBF16BlockSize, 1)
   __syncthreads();
 
   // Copy to output.
+  if (reinterpret_cast<BF16RegisterSmem*>(smemRaw)->match.equalCount > kBF16MaxTies) {
+    bf16ExactOverflowTopK(scores, length, topK, sTopK,
+                         reinterpret_cast<BF16RegisterSmem*>(smemRaw));
+  }
   for (uint32_t i = threadIdx.x; i < static_cast<uint32_t>(topK);
        i += kBF16BlockSize) {
     out[i] = sTopK[i];
@@ -835,17 +911,18 @@ static __global__ __launch_bounds__(kBF16BlockSize, 1)
   int* out = outIndices + static_cast<int64_t>(rowIdx) * topK;
 
   if (length <= static_cast<uint32_t>(topK)) {
-    uint32_t tx = threadIdx.x;
-    if (tx < length) {
-      out[tx] = tx;
-    } else if (tx < static_cast<uint32_t>(topK)) {
-      out[tx] = -1;
+    for (uint32_t tx = threadIdx.x; tx < static_cast<uint32_t>(topK); tx += kBF16BlockSize) {
+      out[tx] = tx < length ? static_cast<int>(tx) : -1;
     }
     return;
   }
 
   bf16StreamingTopK(scores, length, topK, sTopK, smem);
-  bf16TieHandle(sTopK, topK, smem);
+  if (smem->match.equalCount > kBF16MaxTies) {
+    bf16ExactOverflowTopK(scores, length, topK, sTopK, smem);
+  } else {
+    bf16TieHandle(sTopK, topK, smem);
+  }
 
   // Copy to output.
   for (uint32_t i = threadIdx.x; i < static_cast<uint32_t>(topK);

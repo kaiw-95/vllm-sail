@@ -54,6 +54,11 @@ def get_kv_cache_spec(self, vllm_config):
             indexer_n_head=getattr(self, "n_head", None),
             indexer_q_head_dim=getattr(self, "q_head_dim", None),
         )
+        if self.sparse_logits:
+            # PPU sparse paged logits requires a 512B physical page stride.
+            spec = replace(
+                spec, alignment=512, block_stride_alignment=512, page_size_padded=None
+            )
     return spec
 
 

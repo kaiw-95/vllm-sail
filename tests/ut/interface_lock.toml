@@ -11,7 +11,7 @@
 schema = 1
 vllm_version_range = ">=0.32.0,<0.33.0"
 key_interface_count = 10
-target_count = 294
+target_count = 299
 
 [[key_interface]]
 symbol = "vllm.platforms.interface.PlatformEnum"
@@ -1410,6 +1410,22 @@ present = true
 fingerprint = "sha256:f0b8190f5e389d18b797784733fd9f983757ca522a31079f096f165b053461a7"
 
 [[patch_target]]
+name = "vllm.model_executor.layers.sparse_mqa_indexer.sparse_mqa_logits_paged_decode"
+kind = "module"
+module = "vllm/model_executor/layers/sparse_mqa_indexer.py"
+symbol = "sparse_mqa_logits_paged_decode"
+present = true
+fingerprint = "sha256:01716b996372d430f6832338751a7dec809f98a75888562a6cd712cdc8eae7a3"
+
+[[patch_target]]
+name = "vllm.model_executor.layers.sparse_mqa_indexer.sparse_mqa_logits_prefill_chunk"
+kind = "module"
+module = "vllm/model_executor/layers/sparse_mqa_indexer.py"
+symbol = "sparse_mqa_logits_prefill_chunk"
+present = true
+fingerprint = "sha256:01716b996372d430f6832338751a7dec809f98a75888562a6cd712cdc8eae7a3"
+
+[[patch_target]]
 name = "vllm.model_executor.layers.utils.dispatch_unquantized_gemm"
 kind = "module"
 module = "vllm/model_executor/layers/utils.py"
@@ -1696,6 +1712,14 @@ module = "vllm/models/deepseek_v41/attention.py"
 symbol = "DeepseekV4Indexer.__init__"
 present = true
 fingerprint = "sha256:8fb800a55761172913a1d59630b24b2a0a53b90ce2fd75abc41df557b84b2a13"
+
+[[patch_target]]
+name = "vllm.models.deepseek_v41.attention.DeepseekV4Indexer.mqa_cls"
+kind = "class"
+module = "vllm/models/deepseek_v41/attention.py"
+symbol = "DeepseekV4Indexer.mqa_cls"
+present = true
+fingerprint = "sha256:4c2f53df9518c13c8742705a0560c9b8012073991f17a5cb72f8068734082f24"
 
 [[patch_target]]
 name = "vllm.models.deepseek_v41.attention.DeepseekV4IndexerCache.get_kv_cache_spec"
@@ -2226,6 +2250,14 @@ present = true
 fingerprint = "sha256:2301eb139f932e897f03177ee36ae5ac8ea74cf502b3bf34de360d0c0176685d"
 
 [[patch_target]]
+name = "vllm.v1.attention.backends.mla.indexer._use_flattening"
+kind = "module"
+module = "vllm/v1/attention/backends/mla/indexer.py"
+symbol = "_use_flattening"
+present = true
+fingerprint = "sha256:293e72dd5b68d7c3b75695e28c23f046f98a053791d94e5c5401eb417fdf901b"
+
+[[patch_target]]
 name = "vllm.v1.attention.backends.mla.indexer.dsa_indexer_uses_fp4"
 kind = "module"
 module = "vllm/v1/attention/backends/mla/indexer.py"
@@ -2248,6 +2280,14 @@ module = "vllm/v1/attention/backends/mla/prefill/flash_attn.py"
 symbol = "FlashAttnPrefillBackend.__init__"
 present = true
 fingerprint = "sha256:1d9fdfc8d1c9084d5c492a8e546e79eb9138642f636fcfd7e4e9fb9001f9a0b0"
+
+[[patch_target]]
+name = "vllm.v1.attention.backends.mla.sparse_indexer.DeepseekV41SparseIndexerBackend.get_builder_cls"
+kind = "class"
+module = "vllm/v1/attention/backends/mla/sparse_indexer.py"
+symbol = "DeepseekV41SparseIndexerBackend.get_builder_cls"
+present = true
+fingerprint = "sha256:d53a6c9fb96de355a9d7b2f583c5df5962ae77af573cbc1e9833ae8700145099"
 
 [[patch_target]]
 name = "vllm.v1.attention.ops.flashmla._is_flashmla_available"

@@ -112,6 +112,23 @@ Warm each execution stream eagerly before graph capture so DeepGEMM can
 initialize its per-stream workspace. Launch errors propagate without retrying
 against partially modified output.
 
+### Candidate indexer
+
+Use `--attention-config '{"indexer_kv_dtype":"mxfp4","indexer_sparse_logits":true}'`
+to request candidate-only scoring on Zhenwu M890. It requires the four SAIL
+sparse-MQA schedule/logits APIs, 32 index heads of dimension 128, `auto` top-k,
+and no prefill/decode context parallelism. Unsupported device/API/configuration
+combinations log a fallback to dense candidate-block scoring before construction.
+Candidate top-k may be a power of two through 2048; the SAIL layout admits up to
+4096 sparse blocks and token top-k through 2048.
+
+`VLLM_SPARSE_INDEXER_MAX_LOGITS_MB` bounds live logits for the dense FP4/FP8/INT8
+and sparse MXFP4 paths. Each row chunk is scored, selected and written back
+before the next logits allocation; metadata plans may be reused by subsequent
+candidate-consuming layers. The bound includes allocation padding and must be
+large enough for one aligned tile. SAIL sparse decode uses flattened fixed-length
+rows and 512-byte aligned indexer pages, with one logits plan per row chunk.
+
 ## Compatibility controls
 
 | Variable | Default | Behavior |
