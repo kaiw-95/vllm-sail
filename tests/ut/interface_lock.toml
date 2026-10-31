@@ -11,7 +11,7 @@
 schema = 1
 vllm_version_range = ">=0.32.0,<0.33.0"
 key_interface_count = 10
-target_count = 302
+target_count = 304
 
 [[key_interface]]
 symbol = "vllm.platforms.interface.PlatformEnum"
@@ -216,6 +216,22 @@ module = "vllm/model_executor/kernels/mhc/tilelang.py"
 symbol = "mhc_pre_delayed_tilelang"
 present = true
 fingerprint = "sha256:d14fb46dcb9865a290c9b81628b8874a55e55d184503fa0774b2c12f6fc8ea94"
+
+[[patch_target]]
+name = "vllm.model_executor.kernels.mhc.tilelang_kernels.MhcPostTileLangKernel.__call__"
+kind = "class"
+module = "vllm/model_executor/kernels/mhc/tilelang_kernels.py"
+symbol = "MhcPostTileLangKernel.__call__"
+present = true
+fingerprint = "sha256:8ba7aefc44fe64ab4c8e9ea7dd1fb1120ea66fc808b74a44a7ce7d22ae80e713"
+
+[[patch_target]]
+name = "vllm.model_executor.kernels.mhc.tilelang_kernels.MhcPostTileLangKernel.warmup_inputs"
+kind = "class"
+module = "vllm/model_executor/kernels/mhc/tilelang_kernels.py"
+symbol = "MhcPostTileLangKernel.warmup_inputs"
+present = true
+fingerprint = "sha256:c48a58fa40575ccab5e058f0d67f79cd2368c3fc4943b268848c321a467daeab"
 
 [[patch_target]]
 name = "vllm.model_executor.layers.attention.mla_attention.MLAAttention.forward_impl"

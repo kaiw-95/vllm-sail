@@ -17,6 +17,8 @@
   "vllm.model_executor.kernels.mhc.tilelang._hc_prenorm_gemm_outputs": "10f524258ea62de354342f218f4f420127e760933de8798147afc3293490d862",
   "vllm.model_executor.kernels.mhc.tilelang.mhc_fused_post_pre_delayed_tilelang": "5aff728db67d44ce7d1817593f294a26e32cfa35bc7107b7d625ca802179a7b5",
   "vllm.model_executor.kernels.mhc.tilelang.mhc_pre_delayed_tilelang": "62fc6024ba46f30aa07aff77331f3470a98f5c4f0239944a99315ecd7e62dab5",
+  "vllm.model_executor.kernels.mhc.tilelang_kernels.MhcPostTileLangKernel.__call__": "8b369b10954fa13b654a1127b5f6aeaec071fb726c3d84b5c47f9e20ebf4254a",
+  "vllm.model_executor.kernels.mhc.tilelang_kernels.MhcPostTileLangKernel.warmup_inputs": "c406875bcdb5214c5d9d3c013cb1dc1d4989762ee02db73e70f852ede86953f8",
   "vllm.model_executor.layers.attention.mla_attention.MLAAttention.forward_impl": "32647e2cb06ab9eff7333eb1296a06b021211aa262bb3fcac1ae1e2c19a8b6cd",
   "vllm.model_executor.layers.attention.mla_attention._get_kv_b_proj_input_dtype": "df153ac15cbd32af6f1a9ffa6894115a1764a6efd1592d1e55a597ddc8a623e9",
   "vllm.model_executor.layers.attention.mm_encoder_attention.get_flash_attn_version": "c635bf394f63855a2816d7ae878402b4b34ebf85db5f50f7bd92dabb836704c5",

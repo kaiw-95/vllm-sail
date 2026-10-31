@@ -36,6 +36,7 @@ if TYPE_CHECKING:
     VLLM_SAIL_DENSE_BF16_DEEPGEMM: bool = False
     VLLM_SAIL_USE_PLA: bool = True
     VLLM_SAIL_DEEPSEEK_V41_MEGA_MHC: bool = False
+    VLLM_SAIL_MHC_POST_TILED: bool = False
     VLLM_SAIL_DEEPSEEK_VECTOR_DEQUANT: bool = False
     VLLM_SAIL_DEEPGEMM_MOE_TP_FUSED: bool = False
     VLLM_SAIL_DEEPGEMM_MOE_FUSED_ACT_QUANT: bool = False
@@ -60,6 +61,7 @@ if TYPE_CHECKING:
     VLLM_PPU_DENSE_BF16_DEEPGEMM: bool = False
     VLLM_PPU_USE_PLA: bool = True
     VLLM_PPU_DEEPSEEK_V41_MEGA_MHC: bool = False
+    VLLM_PPU_MHC_POST_TILED: bool = False
     VLLM_PPU_DEEPSEEK_VECTOR_DEQUANT: bool = False
     VLLM_PPU_DEEPGEMM_MOE_TP_FUSED: bool = False
     VLLM_PPU_DEEPGEMM_MOE_FUSED_ACT_QUANT: bool = False
@@ -147,6 +149,7 @@ def _positive_int(name: str, default: int) -> Callable[[], int]:
 
 
 environment_variables: dict[str, Callable[[], Any]] = {
+    "VLLM_SAIL_MHC_POST_TILED": _bool("VLLM_SAIL_MHC_POST_TILED", False),
     "VLLM_SAIL_DEEPSEEK_V41_MEGA_MHC": _bool("VLLM_SAIL_DEEPSEEK_V41_MEGA_MHC", False),
     "VLLM_SAIL_DEEPSEEK_VECTOR_DEQUANT": _bool(
         "VLLM_SAIL_DEEPSEEK_VECTOR_DEQUANT", False

@@ -6,6 +6,44 @@ import pytest
 pytestmark = pytest.mark.ppu
 
 
+@pytest.mark.parametrize("tokens", [63, 64, 128, 256, 257])
+@pytest.mark.parametrize("hidden", [5120, 7168])
+def test_tiled_post_matches_serial_kernel_and_graph_replay(tokens, hidden, monkeypatch):
+    import torch
+
+    import vllm_sail
+
+    vllm_sail.register_out_of_tree()
+    from vllm.model_executor.kernels.mhc.tilelang import mhc_post_tilelang
+    from vllm.platforms import current_platform
+
+    if not current_platform.is_ppu() or not current_platform.is_device_capability(
+        (8, 9)
+    ):
+        pytest.skip("The hidden-tiled dispatch requires M890")
+
+    generator = torch.Generator(device="cuda").manual_seed(43)
+    x = torch.randn(tokens, hidden, generator=generator, device="cuda").bfloat16()
+    residual = torch.randn(
+        tokens, 4, hidden, generator=generator, device="cuda"
+    ).bfloat16()
+    post = torch.rand(tokens, 4, 1, generator=generator, device="cuda")
+    comb = torch.rand(tokens, 4, 4, generator=generator, device="cuda")
+    monkeypatch.setenv("VLLM_SAIL_MHC_POST_TILED", "0")
+    expected = mhc_post_tilelang(x, residual, post, comb)
+    monkeypatch.setenv("VLLM_SAIL_MHC_POST_TILED", "1")
+    actual = mhc_post_tilelang(x, residual, post, comb)
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        actual = mhc_post_tilelang(x, residual, post, comb)
+    x.mul_(0.5)
+    graph.replay()
+    monkeypatch.setenv("VLLM_SAIL_MHC_POST_TILED", "0")
+    expected = mhc_post_tilelang(x, residual, post, comb)
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
 @pytest.mark.parametrize("tokens", [1, 33])
 @pytest.mark.parametrize("carried", [False, True])
 def test_delayed_mhc_prenorm_matches_reference(tokens, carried):

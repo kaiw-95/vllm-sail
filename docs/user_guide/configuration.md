@@ -112,6 +112,17 @@ Warm each execution stream eagerly before graph capture so DeepGEMM can
 initialize its per-stream workspace. Launch errors propagate without retrying
 against partially modified output.
 
+Set `VLLM_SAIL_MHC_POST_TILED=1` to split standalone mHC post across 1024-wide
+hidden tiles on Zhenwu M890. This follows the SAIL scheduling in
+[SGLang 6ad06a8](https://github.com/flytiger-eco/sglang-for-sail/commit/6ad06a858bc76d4fff1594f9b8573f69405f4544).
+It defaults to `0`, accepts the `VLLM_PPU_MHC_POST_TILED` alias, and applies
+only to contiguous BF16 four-stream batches of 64–256 tokens with FP32 mixes
+and hidden size greater than 1024 and divisible by 1024. Standalone V4/V4.1
+post, DSpark and delayed post fallbacks share this dispatch. The existing JIT
+warmup registration compiles both serial and tiled post when this flag is
+enabled. If JIT warmup is disabled, warm the enabled shapes eagerly before
+graph capture. PPU numerical and performance validation is pending.
+
 ### Candidate indexer
 
 Use `--attention-config '{"indexer_kv_dtype":"mxfp4","indexer_sparse_logits":true}'`
