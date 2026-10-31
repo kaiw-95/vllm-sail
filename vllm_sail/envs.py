@@ -37,6 +37,7 @@ if TYPE_CHECKING:
     VLLM_SAIL_USE_PLA: bool = True
     VLLM_SAIL_DEEPSEEK_V41_MEGA_MHC: bool = False
     VLLM_SAIL_MHC_POST_TILED: bool = False
+    VLLM_SAIL_DEEPSEEK_C128_TWO_STAGE: bool = False
     VLLM_SAIL_ENGRAM_HOST_SORT_MIN_ROWS: int = 0
     VLLM_SAIL_DEEPSEEK_VECTOR_DEQUANT: bool = False
     VLLM_SAIL_DEEPGEMM_MOE_TP_FUSED: bool = False
@@ -63,6 +64,7 @@ if TYPE_CHECKING:
     VLLM_PPU_USE_PLA: bool = True
     VLLM_PPU_DEEPSEEK_V41_MEGA_MHC: bool = False
     VLLM_PPU_MHC_POST_TILED: bool = False
+    VLLM_PPU_DEEPSEEK_C128_TWO_STAGE: bool = False
     VLLM_PPU_ENGRAM_HOST_SORT_MIN_ROWS: int = 0
     VLLM_PPU_DEEPSEEK_VECTOR_DEQUANT: bool = False
     VLLM_PPU_DEEPGEMM_MOE_TP_FUSED: bool = False
@@ -169,6 +171,9 @@ def _nonnegative_int(name: str, default: int) -> Callable[[], int]:
 
 
 environment_variables: dict[str, Callable[[], Any]] = {
+    "VLLM_SAIL_DEEPSEEK_C128_TWO_STAGE": _bool(
+        "VLLM_SAIL_DEEPSEEK_C128_TWO_STAGE", False
+    ),
     "VLLM_SAIL_ENGRAM_HOST_SORT_MIN_ROWS": _nonnegative_int(
         "VLLM_SAIL_ENGRAM_HOST_SORT_MIN_ROWS", 0
     ),

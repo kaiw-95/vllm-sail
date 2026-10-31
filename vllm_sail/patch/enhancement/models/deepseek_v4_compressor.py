@@ -53,6 +53,12 @@ def __init__(
     self._use_two_stage_fused_compressor = (
         _prefer_two_stage_compressor() and head_dim == 512 and not self.overlap
     )
+    if current_platform.is_ppu():
+        from vllm_sail.models.deepseek_v4.compressor import can_allocate
+
+        self._use_two_stage_fused_compressor = can_allocate(
+            vllm_config, compress_ratio, head_dim
+        )
     self.max_num_batched_tokens = (
         vllm_config.scheduler_config.max_num_batched_tokens
     )
@@ -209,6 +215,11 @@ def _compress_norm_rope_store(
     # cutedsl (head=512) accepts the full-cache flags; triton (indexer/AMD)
     # does not, so the two callables have different signatures.
     compress_norm_rope_store_fn: Any
+    use_two_stage = self._use_two_stage_fused_compressor
+    if use_two_stage and current_platform.is_ppu():
+        from vllm_sail.models.deepseek_v4.compressor import can_launch
+
+        use_two_stage = can_launch(self, state_metadata, state_cache, kv_cache, num_actual)
     # PPU MODIFICATION: begin
     if (
         current_platform.is_cuda()
@@ -229,7 +240,7 @@ def _compress_norm_rope_store(
             store_full_fp8=store_full_fp8,
             fp8_scale=fp8_scale,
         )
-    elif self._use_two_stage_fused_compressor:
+    elif use_two_stage:
         # head=512 cr>=128 (no overlap): two-pass split compressor on the
         # prefill suffix, single-pass on the decode prefix.
         assert state_metadata.num_decode_tokens is not None

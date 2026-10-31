@@ -140,6 +140,25 @@ schedule. Enable and tune this on machines without host-page-table translation
 probe ATS or select a performance threshold automatically. Sorting cost,
 numerical parity and graph replay remain to be measured on PPU hardware.
 
+### V4 C128 compressor
+
+Set `VLLM_SAIL_DEEPSEEK_C128_TWO_STAGE=1` before engine construction to use
+eight 64-column compression tiles, followed by norm/RoPE/quant/cache store,
+on Zhenwu M890. The policy follows the decomposition in
+[SGLang c128_v2](https://github.com/flytiger-eco/sglang-for-sail/blob/ccf7e9a558184a01059e2553f97cdb52c67f12c8/python/sglang/kernels/jit/csrc/deepseek_v4/c128_v2.cuh),
+using vLLM's existing Triton kernels and numerical boundaries. It defaults
+to `0` and accepts the corresponding `VLLM_PPU_*` alias.
+
+This applies only to DeepSeek V4 ratio-128 compression with head dimension
+512, RoPE dimension 64 and the legacy 584-byte `fp8_ds_mla` cache. V4.1
+ratio-1/2 layers retain their existing compressor. Decode rows keep single-pass
+compression; only the prefill suffix uses the two-stage path. Per-layer FP32
+scratch is allocated during construction for stable graph addresses. Ubatching
+and DBO retain single-pass compression. Changing the flag after construction
+cannot create the scratch; disabling it restores the existing launcher.
+Recapture graphs after changing this policy. PPU correctness, graph replay
+and performance remain unverified.
+
 ### Candidate indexer
 
 Use `--attention-config '{"indexer_kv_dtype":"mxfp4","indexer_sparse_logits":true}'`

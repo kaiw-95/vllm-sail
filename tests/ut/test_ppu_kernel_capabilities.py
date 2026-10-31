@@ -146,6 +146,7 @@ def test_optional_gates_rebind_preloaded_and_future_consumers(modules, cute_cons
     [
         (True, 512, False, "triton"),
         (True, 128, False, "triton"),
+        (True, 512, True, "two_stage"),
         (False, 512, False, "cute"),
         (False, 512, True, "two_stage"),
     ],
@@ -155,9 +156,10 @@ def test_compressor_uses_supported_kernel(modules, ppu, head, two_stage, expecte
     calls = []
     platform = types.SimpleNamespace(
         is_ppu=lambda: ppu,
-        is_cuda=lambda: not two_stage,
-        is_rocm=lambda: two_stage,
+        is_cuda=lambda: ppu or not two_stage,
+        is_rocm=lambda: two_stage and not ppu,
         is_xpu=lambda: False,
+        is_device_capability=lambda cap, device_id: device_id == 3,
     )
 
     def kernel(name):
@@ -179,7 +181,17 @@ def test_compressor_uses_supported_kernel(modules, ppu, head, two_stage, expecte
         cudagraph_runtime_mode="none",
         capturing=False,
     )
-    cache = types.SimpleNamespace(shape=(2, 64, 2048), dtype="u8")
+    cache = types.SimpleNamespace(
+        shape=(2, 64, 584),
+        ndim=3,
+        dtype="u8",
+        device="cuda:3",
+        is_contiguous=lambda: True,
+        stride=lambda axis: (37440, 584, 1)[axis],
+    )
+    state_cache = types.SimpleNamespace(
+        shape=(2, 64, 1024), dtype="fp32", device="cuda:3"
+    )
     cls = type("DeepseekCompressor", (), {"_compress_norm_rope_store": lambda *a: None})
     module = modules(
         f"{base}.compressor",
@@ -192,7 +204,9 @@ def test_compressor_uses_supported_kernel(modules, ppu, head, two_stage, expecte
         CUDAGraphMode=types.SimpleNamespace(FULL="full"),
         torch=types.SimpleNamespace(
             uint8="u8",
+            float32="fp32",
             float8_e4m3fn="fp8",
+            accelerator=types.SimpleNamespace(current_device_index=lambda: 3),
             cuda=types.SimpleNamespace(
                 is_current_stream_capturing=lambda: context.capturing
             ),
@@ -201,6 +215,11 @@ def test_compressor_uses_supported_kernel(modules, ppu, head, two_stage, expecte
         compress_norm_rope_store_triton=kernel("triton"),
         compress_norm_rope_store_two_stage_triton=kernel("two_stage"),
     )
+    modules("torch", **module.torch.__dict__)
+    modules("vllm.platforms", current_platform=platform)
+    modules("vllm_sail.envs", VLLM_SAIL_DEEPSEEK_C128_TWO_STAGE=two_stage)
+    policy = load_patch("vllm_sail/models/deepseek_v4/compressor.py")
+    modules("vllm_sail.models.deepseek_v4.compressor", can_launch=policy.can_launch)
     original_forward = function(
         "tests/fixtures/deepseek_v4_compressor_forward.py", "forward", module.__dict__
     )
@@ -213,17 +232,19 @@ def test_compressor_uses_supported_kernel(modules, ppu, head, two_stage, expecte
     load_patch("vllm_sail/patch/enhancement/models/deepseek_v4_compressor.py")
     obj = cls.__new__(cls)
     obj.__dict__.update(
-        coff=2,
+        coff=1 if two_stage else 2,
         head_dim=head,
-        state_cache=types.SimpleNamespace(prefix="state", kv_cache=cache),
+        state_cache=types.SimpleNamespace(prefix="state", kv_cache=state_cache),
         ape=object(),
-        compress_ratio=4,
+        compress_ratio=128 if two_stage else 4,
         k_cache_prefix="kv",
         _static_forward_context={"kv": types.SimpleNamespace(kv_cache=cache)},
         overlap=False,
         eager_scratch_pool=None,
         _use_two_stage_fused_compressor=two_stage,
-        _compress_scratch=object(),
+        _compress_scratch=types.SimpleNamespace(
+            shape=(64, 512), dtype="fp32", device="cuda:3", is_contiguous=lambda: True
+        ),
         rope_head_dim=64,
         use_fp4_cache=False,
         norm=types.SimpleNamespace(weight=object()),
@@ -261,8 +282,9 @@ def test_compressor_uses_supported_kernel(modules, ppu, head, two_stage, expecte
 @pytest.mark.parametrize("head,ratio", [(512, 4), (512, 128), (128, 4)])
 @pytest.mark.parametrize("warmup", [True, False])
 @pytest.mark.parametrize("cache_dtype", ["fp8_ds_mla", "bf16"])
+@pytest.mark.parametrize("split", [False, True])
 def test_compressor_constructor_registers_supported_warmup(
-    modules, ppu, head, ratio, warmup, cache_dtype
+    modules, ppu, head, ratio, warmup, cache_dtype, split
 ):
     base = "vllm.models.deepseek_v4"
     calls = []
@@ -280,9 +302,16 @@ def test_compressor_constructor_registers_supported_warmup(
         f"{base}.compressor",
         DeepseekCompressor=cls,
         current_platform=types.SimpleNamespace(
-            device_type="cuda", is_cuda=lambda: True, is_ppu=lambda: ppu
+            device_type="cuda",
+            is_cuda=lambda: True,
+            is_ppu=lambda: ppu,
+            is_device_capability=lambda cap, device_id: device_id == 3,
         ),
-        torch=types.SimpleNamespace(empty=noop, float32="fp32"),
+        torch=types.SimpleNamespace(
+            empty=noop,
+            float32="fp32",
+            accelerator=types.SimpleNamespace(current_device_index=lambda: 3),
+        ),
         nn=types.SimpleNamespace(Parameter=noop),
         _prefer_two_stage_compressor=lambda: False,
         MergedColumnParallelLinear=noop,
@@ -294,6 +323,11 @@ def test_compressor_constructor_registers_supported_warmup(
         f"{base}.common.ops.fused_compress_quant_cache",
         _FUSED_KV_COMPRESS_NORM_ROPE_INSERT_INDEXER_TRITON_KERNEL=kernel("triton"),
     )
+    modules("torch", **provider.torch.__dict__)
+    modules("vllm.platforms", current_platform=provider.current_platform)
+    modules("vllm_sail.envs", VLLM_SAIL_DEEPSEEK_C128_TWO_STAGE=split)
+    policy = load_patch("vllm_sail/models/deepseek_v4/compressor.py")
+    modules("vllm_sail.models.deepseek_v4.compressor", can_allocate=policy.can_allocate)
     # On PPU the CuTeDSL module is deliberately unavailable: even importing it
     # during construction is a regression, regardless of the forward guard.
     if not ppu:
@@ -315,8 +349,14 @@ def test_compressor_constructor_registers_supported_warmup(
         compilation_config=ns(static_forward_context={}),
         kernel_config=ns(enable_jit_warmup=warmup),
         cache_config=ns(cache_dtype=cache_dtype),
+        parallel_config=ns(use_ubatching=False),
     )
     obj = cls(config, ratio, 256, head)
+    expected_split = (
+        ppu and split and head == 512 and ratio == 128 and cache_dtype == "fp8_ds_mla"
+    )
+    assert obj._use_two_stage_fused_compressor is expected_split
+    assert (obj._compress_scratch is not None) is expected_split
     assert obj.__init__.__func__.__globals__ is provider.__dict__
     if not warmup:
         assert calls == []

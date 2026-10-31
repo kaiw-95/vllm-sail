@@ -11,7 +11,7 @@
 schema = 1
 vllm_version_range = ">=0.32.0,<0.33.0"
 key_interface_count = 10
-target_count = 305
+target_count = 307
 
 [[key_interface]]
 symbol = "vllm.platforms.interface.PlatformEnum"
@@ -1642,6 +1642,14 @@ present = true
 fingerprint = "sha256:ed22bfa90c7271b064e2e5c71a17b903fc2abc873a1ac4df486187d0936aaf78"
 
 [[patch_target]]
+name = "vllm.models.deepseek_v4.common.ops.fused_compress_quant_cache._pick_compress_num_splits"
+kind = "module"
+module = "vllm/models/deepseek_v4/common/ops/fused_compress_quant_cache.py"
+symbol = "_pick_compress_num_splits"
+present = true
+fingerprint = "sha256:9bed65735d84f0a4bbc3773f336796598fe7b61814f28cce9ea9facdf2762c47"
+
+[[patch_target]]
 name = "vllm.models.deepseek_v4.common.ops.fused_compress_quant_cache.compress_norm_rope_store_triton"
 kind = "module"
 module = "vllm/models/deepseek_v4/common/ops/fused_compress_quant_cache.py"
@@ -1680,6 +1688,14 @@ module = "vllm/models/deepseek_v4/compressor.py"
 symbol = "DeepseekCompressor._compress_norm_rope_store"
 present = true
 fingerprint = "sha256:275eeba1fba646d8a7590f49d1df0ba2cea0c41ca57a22be2a4bcea905b47cab"
+
+[[patch_target]]
+name = "vllm.models.deepseek_v4.compressor._prefer_two_stage_compressor"
+kind = "module"
+module = "vllm/models/deepseek_v4/compressor.py"
+symbol = "_prefer_two_stage_compressor"
+present = true
+fingerprint = "sha256:2301eb139f932e897f03177ee36ae5ac8ea74cf502b3bf34de360d0c0176685d"
 
 [[patch_target]]
 name = "vllm.models.deepseek_v4.compressor.compress_norm_rope_store_triton"

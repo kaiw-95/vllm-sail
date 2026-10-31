@@ -39,6 +39,7 @@ EXPECTED_MODULES = {
     "deepseek_v4_cache",
     "deepseek_v4_metadata",
     "deepseek_v4_compressor",
+    "deepseek_v4_compressor_split",
     "deepseek_v41",
     "deepseek_v41_engram",
     "deepseek_v41_engram_host",
