@@ -34,6 +34,7 @@ def test_channelwise_engram_lookup_preserves_fp32_scales(cpu_offload):
     _engram_lookup_kernel[(1,)](
         *views,
         ids,
+        ids,
         out,
         8,
         16,
@@ -47,6 +48,9 @@ def test_channelwise_engram_lookup_preserves_fp32_scales(cpu_offload):
         QUANT_BLOCK=256,
         BLOCK_R=16,
         GRID=1,
+        SORTED=False,
+        PACKED=False,
+        OUT_STRIDE=out.stride(0),
     )
     torch.cuda.synchronize()
     expected = torch.zeros(2, 3, 256, dtype=torch.bfloat16)
