@@ -20,6 +20,7 @@ import subprocess
 import sys
 import time
 import traceback
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 from urllib.error import URLError
@@ -267,6 +268,7 @@ def installed_identity(directory: Path, env: dict[str, str]) -> dict:
     """Probe installed paths in an isolated interpreter outside the checkout."""
     code = """
 import hashlib, importlib.metadata as md, importlib.util, json, sys
+from contextlib import contextmanager
 from pathlib import Path
 packages = {}
 for dist_name, module in [('vllm', 'vllm'), ('vllm-sail', 'vllm_sail'), ('torch', 'torch')]:
@@ -346,6 +348,24 @@ def verify_execution_proof(path: Path, inventory: dict) -> dict:
     }
 
 
+@contextmanager
+def defer_termination_signals():
+    """Record termination while owned-process state is being made durable."""
+    pending = []
+
+    def interrupted(signum, frame):
+        pending.append(signum)
+
+    previous = {
+        sig: signal.signal(sig, interrupted) for sig in (signal.SIGINT, signal.SIGTERM)
+    }
+    try:
+        yield pending
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+
+
 def run_sanity(
     profile_key: str,
     *,
@@ -417,20 +437,27 @@ def run_sanity(
             invocation.update(identities)
             result.update(identities)
             write_json(output / "invocation.json", invocation)
-        with log.open("wb") as stream:
-            process = subprocess.Popen(
-                command,
-                cwd=output,
-                env=env,
-                stdout=stream,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,
+        with defer_termination_signals() as launch_signals:
+            with log.open("wb") as stream:
+                process = subprocess.Popen(
+                    command,
+                    cwd=output,
+                    env=env,
+                    stdout=stream,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                )
+            write_json(
+                output / "owned-process-group.json",
+                {"pid": process.pid, "pgid": process.pid},
             )
-        write_json(
-            output / "owned-process-group.json",
-            {"pid": process.pid, "pgid": process.pid},
-        )
-        write_json(output / "owned-process-group.txt", process_identity(process.pid))
+            write_json(
+                output / "owned-process-group.txt", process_identity(process.pid)
+            )
+            if launch_signals:
+                raise KeyboardInterrupt(
+                    f"received signal {launch_signals[-1]} during server launch"
+                )
         base_url = f"http://127.0.0.1:{port}"
         models = wait_ready(process, base_url, served_name, log, ready_timeout)
         write_json(output / "models.json", models)
@@ -468,42 +495,60 @@ def run_sanity(
     except (Exception, KeyboardInterrupt) as exc:
         result["error"] = f"{type(exc).__name__}: {exc}"
     finally:
-        if process is not None:
-            try:
-                result["cleanup"] = stop_owned_server(process)
-                cleanup = result["cleanup"]
-                if (
-                    not cleanup["group_absent"]
-                    or cleanup["forced"]
-                    or not cleanup["was_running"]
-                    or cleanup["returncode"] not in (0, -signal.SIGTERM, -signal.SIGINT)
-                ):
+        with defer_termination_signals() as cleanup_signals:
+            if process is not None:
+                try:
+                    result["cleanup"] = stop_owned_server(process)
+                    cleanup = result["cleanup"]
+                    if (
+                        not cleanup["group_absent"]
+                        or cleanup["forced"]
+                        or not cleanup["was_running"]
+                        or cleanup["returncode"]
+                        not in (0, -signal.SIGTERM, -signal.SIGINT)
+                    ):
+                        result.update(
+                            status="failed",
+                            cleanup_error="owned group did not stop gracefully",
+                        )
+                except Exception as exc:
                     result.update(
-                        status="failed",
-                        cleanup_error="owned group did not stop gracefully",
+                        status="failed", cleanup_error=f"{type(exc).__name__}: {exc}"
                     )
-            except Exception as exc:
-                result.update(
-                    status="failed", cleanup_error=f"{type(exc).__name__}: {exc}"
+                    result["cleanup_traceback"] = traceback.format_exc()
+            if log.exists():
+                result["post_shutdown_errors"] = len(
+                    ERROR_RE.findall(log.read_text(errors="replace"))
                 )
-                result["cleanup_traceback"] = traceback.format_exc()
-        if log.exists():
-            result["post_shutdown_errors"] = len(
-                ERROR_RE.findall(log.read_text(errors="replace"))
+                if result["post_shutdown_errors"]:
+                    result.update(
+                        status="failed", log_error="ERROR entries in final serve.log"
+                    )
+            if cleanup_signals:
+                result["status"] = "failed"
+                result["interrupted_during_cleanup"] = list(cleanup_signals)
+                result.setdefault("error", "received termination signal during cleanup")
+            result["state"] = result["status"]
+            result["server_exit_after_cleanup"] = result.get("cleanup", {}).get(
+                "returncode"
             )
-            if result["post_shutdown_errors"]:
+            metrics = output / "metrics.prom"
+            if metrics.is_file():
+                result["metrics_sha256"] = hashlib.sha256(
+                    metrics.read_bytes()
+                ).hexdigest()
+            result["elapsed_seconds"] = time.monotonic() - started
+            write_json(output / "result.json", result)
+            # A first cancellation can arrive while metrics or the final JSON
+            # are being written, after the earlier cleanup-signal check.
+            if cleanup_signals and result["status"] != "failed":
                 result.update(
-                    status="failed", log_error="ERROR entries in final serve.log"
+                    status="failed",
+                    state="failed",
+                    interrupted_during_cleanup=list(cleanup_signals),
+                    error="received termination signal during final result write",
                 )
-        result["state"] = result["status"]
-        result["server_exit_after_cleanup"] = result.get("cleanup", {}).get(
-            "returncode"
-        )
-        metrics = output / "metrics.prom"
-        if metrics.is_file():
-            result["metrics_sha256"] = hashlib.sha256(metrics.read_bytes()).hexdigest()
-        result["elapsed_seconds"] = time.monotonic() - started
-        write_json(output / "result.json", result)
+                write_json(output / "result.json", result)
     return result
 
 

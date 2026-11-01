@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import signal
 import socket
 import subprocess
 import sys
@@ -470,3 +471,133 @@ def test_cli_failure_exits_nonzero_and_lists_profiles_without_runtime_deps(tmp_p
     )
     assert failed.returncode == 1
     assert json.loads(failed.stdout)["status"] == "failed"
+
+
+@pytest.mark.parametrize(
+    "signum", [signal.SIGINT, signal.SIGTERM], ids=["sigint", "sigterm"]
+)
+def test_signal_at_child_creation_keeps_handle_and_cleans_owned_group(
+    monkeypatch, launch_external_double, signum
+):
+    real_popen = subprocess.Popen
+    children = []
+
+    def interrupted(number, frame):
+        raise KeyboardInterrupt(f"received signal {number}")
+
+    previous = signal.signal(signum, interrupted)
+
+    def interrupt_after_spawn(*args, **kwargs):
+        child = real_popen(*args, **kwargs)
+        children.append(child)
+        os.kill(os.getpid(), signum)
+        return child
+
+    monkeypatch.setattr(sanity.subprocess, "Popen", interrupt_after_spawn)
+    try:
+        result, output = launch_external_double(with_stream=False)
+        assert result["status"] == result["state"] == "failed"
+        assert "during server launch" in result["error"]
+        assert result["cleanup"]["group_absent"]
+        assert not result["cleanup"]["forced"]
+        assert children[0].returncode is not None
+        owned = json.loads((output / "owned-process-group.txt").read_text())
+        assert owned["pid"] == result["cleanup"]["pgid"] == children[0].pid
+        assert json.loads((output / "result.json").read_text()) == result
+        assert signal.getsignal(signum) is interrupted
+    finally:
+        signal.signal(signum, previous)
+        for child in children:
+            if child.poll() is None:
+                os.killpg(child.pid, signal.SIGTERM)
+            child.wait(timeout=10)
+
+
+def test_failed_spawn_restores_signal_handlers(monkeypatch, launch_external_double):
+    previous = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
+
+    def cannot_spawn(*args, **kwargs):
+        raise OSError("fixture spawn failed")
+
+    monkeypatch.setattr(sanity.subprocess, "Popen", cannot_spawn)
+    result, output = launch_external_double(with_stream=False)
+    assert result["status"] == "failed"
+    assert "fixture spawn failed" in result["error"]
+    assert "cleanup" not in result
+    assert not (output / "owned-process-group.txt").exists()
+    assert {sig: signal.getsignal(sig) for sig in previous} == previous
+
+
+@pytest.mark.parametrize(
+    "signum", [signal.SIGINT, signal.SIGTERM], ids=["sigint", "sigterm"]
+)
+def test_repeated_signal_during_cleanup_still_reaps_and_persists_result(
+    monkeypatch, launch_external_double, signum
+):
+    real_popen = subprocess.Popen
+    children = []
+
+    def interrupted(number, frame):
+        raise KeyboardInterrupt(f"received signal {number}")
+
+    previous = signal.signal(signum, interrupted)
+
+    def interrupt_spawn_and_cleanup(*args, **kwargs):
+        child = real_popen(*args, **kwargs)
+        children.append(child)
+        terminate = child.terminate
+
+        def interrupted_terminate():
+            os.kill(os.getpid(), signum)
+            return terminate()
+
+        child.terminate = interrupted_terminate
+        os.kill(os.getpid(), signum)
+        return child
+
+    monkeypatch.setattr(sanity.subprocess, "Popen", interrupt_spawn_and_cleanup)
+    try:
+        result, output = launch_external_double(with_stream=False)
+        assert result["status"] == result["state"] == "failed"
+        assert result["interrupted_during_cleanup"] == [signum]
+        assert result["cleanup"]["group_absent"]
+        assert not result["cleanup"]["forced"]
+        assert children[0].returncode is not None
+        assert (output / "owned-process-group.txt").is_file()
+        assert json.loads((output / "result.json").read_text()) == result
+        assert signal.getsignal(signum) is interrupted
+    finally:
+        signal.signal(signum, previous)
+        for child in children:
+            if child.poll() is None:
+                os.killpg(child.pid, signal.SIGTERM)
+            child.wait(timeout=10)
+
+
+@pytest.mark.parametrize(
+    "signum", [signal.SIGINT, signal.SIGTERM], ids=["sigint", "sigterm"]
+)
+def test_first_signal_during_final_write_cannot_persist_passed(
+    monkeypatch, launch_external_double, signum
+):
+    real_write = sanity.write_json
+    delivered = False
+
+    def interrupt_final_write(path, value):
+        nonlocal delivered
+        real_write(path, value)
+        if path.name == "result.json" and not delivered:
+            delivered = True
+            os.kill(os.getpid(), signum)
+
+    monkeypatch.setattr(sanity, "write_json", interrupt_final_write)
+    previous = signal.getsignal(signum)
+    result, output = launch_external_double()
+    assert delivered
+    assert result["status"] == result["state"] == "failed"
+    assert result["answer"] == result["stream_answer"] == "42"
+    assert result["cleanup"]["group_absent"]
+    assert not result["cleanup"]["forced"]
+    assert result["interrupted_during_cleanup"] == [signum]
+    assert json.loads((output / "result.json").read_text()) == result
+    assert signal.getsignal(signum) is previous

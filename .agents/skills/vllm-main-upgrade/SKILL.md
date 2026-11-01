@@ -77,6 +77,12 @@ imports while its installed-vLLM tests still require driver metadata during
 collection. Preserve such environment failures and rerun the complete selector
 in the prepared device environment; do not fabricate NVML or add mode skips.
 
+Defer handled termination signals across subprocess creation, handle assignment
+and ownership-record writes. Verify this launch boundary with a real child and
+real signals so interruption cannot leave an unrecorded service session. Defer
+repeated termination during owned cleanup and final result writes as well; retain
+a failed result and restore the caller's handlers after the evidence is durable.
+
 Capture conditional aliases in both cold and preloaded consumer processes when the generated target set changes. Resolve the captured callable's actual provider, including inherited methods, compilation decorators and unavailable-backend fallbacks, before assigning a source fingerprint. Read the provider guidance in [acceptance.md](references/acceptance.md).
 
 Recheck release-branch API ownership at mandatory off-main endpoints; do not assume main and the release tag provide the same helper. Audit real-environment fixtures as well as production adapters: a bare-CPU or source-only pass can skip a fixture that imports the real provider. Exercise that provider in the compatible Torch environment, preserve a focused failing case and retain all behavioral assertions when adapting the fixture. At a release-range transition update patch declarations, coarse compatibility policy, tests and maintained user guides together. The full-SHA pin remains authoritative.
