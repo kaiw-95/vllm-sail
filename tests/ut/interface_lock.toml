@@ -11,7 +11,7 @@
 schema = 1
 vllm_version_range = ">=0.32.0,<0.33.0"
 key_interface_count = 10
-target_count = 264
+target_count = 267
 
 [[key_interface]]
 symbol = "vllm.platforms.interface.PlatformEnum"
@@ -119,7 +119,7 @@ kind = "module"
 module = "vllm/envs.py"
 symbol = "environment_variables"
 present = true
-fingerprint = "sha256:4bf241965cd3cfd79d82f94c308ea365b5abea4c592c2f28f26762092f205c5a"
+fingerprint = "sha256:6efb78915386dcd5112e40c65c6ba11eaa0e05916b1ea988145b7af8b4fcc1b8"
 
 [[patch_target]]
 name = "vllm.lora.layers.utils.try_get_optimal_moe_config"
@@ -1696,6 +1696,30 @@ module = "vllm/models/minimax_m3/nvidia/model.py"
 symbol = "MiniMaxM3Model._init_fused_moe_finalize"
 present = true
 fingerprint = "sha256:c5e6dd8a47ae0b976fe057599226161ecef1129ad9e620528daf7c5787ca8f3b"
+
+[[patch_target]]
+name = "vllm.models.muse_spark.common.moe.fused_musespark1x_routing"
+kind = "module"
+module = "vllm/models/muse_spark/common/moe.py"
+symbol = "fused_musespark1x_routing"
+present = true
+fingerprint = "sha256:c5dc07e066663f901158504cc053d9a716ab64c0e4b3c0049558f0479f30d7d3"
+
+[[patch_target]]
+name = "vllm.models.muse_spark.common.ops.fused_routing.fused_musespark1x_routing"
+kind = "module"
+module = "vllm/models/muse_spark/common/ops/fused_routing.py"
+symbol = "fused_musespark1x_routing"
+present = true
+fingerprint = "sha256:af4878eb079bbad8be4bef8e5e235d14c55d414103c6faa39bee9b95745c47ec"
+
+[[patch_target]]
+name = "vllm.models.muse_spark.nvidia.model.fused_musespark1x_routing"
+kind = "module"
+module = "vllm/models/muse_spark/nvidia/model.py"
+symbol = "fused_musespark1x_routing"
+present = true
+fingerprint = "sha256:c5dc07e066663f901158504cc053d9a716ab64c0e4b3c0049558f0479f30d7d3"
 
 [[patch_target]]
 name = "vllm.platforms.interface.Platform.is_ppu"

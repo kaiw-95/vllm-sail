@@ -30,7 +30,7 @@ original exactly; do not replace the baseline merely because the new run differs
 
 Do not advance the formal pin until its predecessor is accepted. Independent investigation or private drafts may proceed while hardware work runs; label their evidence accordingly.
 
-1. Inventory changed copied bodies, delegated providers, signatures, native inputs and separately cached by-value consumers. Review real source bodies; an unchanged signature or successful import does not prove compatibility.
+1. Inventory changed copied bodies, delegated providers, signatures, native inputs and separately cached by-value consumers. Trace callers of newly excluded native operations: inherited CUDA identity or an `hasattr` check can select a compute stub instead of an existing PPU fallback. Review real source bodies; an unchanged signature or successful import does not prove compatibility.
    Compare complete copied bodies with the exact upstream functions, retaining only the documented PPU differences. An upstream-delta-only review can miss older drift in weight ownership, resolved model flags and ignored-value handling. Add public-behavior regressions for any such differences before adopting fingerprints.
 2. Prefer registration and platform interfaces. Preserve PPU modification regions when refreshing copied upstream bodies. Regenerate native outputs, patch inventory, interface locks and reviewed drift baselines with maintained tools.
 3. Add behavioral regressions at changed call boundaries using real upstream helpers where feasible. If an existing fixture becomes stale, retain its semantic assertions and preserve the failing evidence.
@@ -59,6 +59,12 @@ Reserve each attempt directory atomically. Check both source trees' exact HEAD
 and tracked/untracked cleanliness before and after source gates. Wait for any
 asynchronous log writer and propagate its failure before publishing a successful
 stage receipt; preserve each earlier executor version and attempt.
+
+Bind each device executor to the confirmed resource window, including resource
+waits and every child test process. A time check before launch cannot bound a
+running suite. Reserve enough time for the actual owned-process cleanup before
+the lease ends. Record budget interruptions separately from model regressions;
+they never count as successful sanity or checkpoint acceptance.
 
 Read commit identities from the live repositories when producing each source
 receipt, and bind the actual producer hash and required ignored inputs. A
