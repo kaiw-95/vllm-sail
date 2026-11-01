@@ -39,6 +39,7 @@ EXPECTED_MODULES = {
     "deepseek_v4_cache",
     "deepseek_v4_metadata",
     "deepseek_v4_compressor",
+    "glm5_next",
     "kimi_k3",
     "llama4",
     "minimax_m3",
