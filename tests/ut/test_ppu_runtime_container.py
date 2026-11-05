@@ -60,8 +60,8 @@ def test_runtime_wrapper_keeps_deep_gemm_cache_outside_the_container():
     # container's writable layer, which docker rm discards -- every accuracy
     # case then repeats the DeepGEMM JIT pass.
     assert ': "${PPU_CI_DG_CACHE_DIR:?PPU_CI_DG_CACHE_DIR is required' in text
-    assert "dg_cache_root=$(realpath \"${PPU_CI_DG_CACHE_DIR}\")" in text
-    assert "[[ -d \"${dg_cache_root}\" ]]" in text
+    assert 'dg_cache_root=$(realpath "${PPU_CI_DG_CACHE_DIR}")' in text
+    assert '[[ -d "${dg_cache_root}" ]]' in text
     assert '--mount "type=bind,source=${dg_cache_root},target=${dg_cache_root}"' in text
     # deep_gemm reads DG_JIT_CACHE_DIR; the SDK builds also honour the older
     # DG_CACHE_DIR, so both names point at the same directory.
