@@ -35,6 +35,11 @@ class ChannelwiseEngramEmbedding(ParallelEngramEmbedding):
         self.weight_scale_inv.dummy_weight_value = 1.0
 
     def _allocate_weights(self):
+        if getattr(self, "peer_rows", 0):
+            raise NotImplementedError(
+                "Channelwise Engram does not support peer-table storage; "
+                "enable cpu_offload or use tensor parallelism."
+            )
         placement = {"device": "cpu", "pin_memory": True} if self.cpu_offload else {}
         return (
             torch.empty(

@@ -57,6 +57,10 @@ def test_engram_channelwise_storage_keeps_real_fp32_scales(modules, offload):
     )
     with pytest.raises(ValueError, match="dp_shared_memory"):
         cls(10, 256, (10,), dp_shared_memory=True)
+    peer_embedding = cls.__new__(cls)
+    peer_embedding.peer_rows = 8
+    with pytest.raises(NotImplementedError, match="peer-table"):
+        peer_embedding._allocate_weights()
 
 
 def test_engram_factory_keeps_offload_and_original_layouts(modules):

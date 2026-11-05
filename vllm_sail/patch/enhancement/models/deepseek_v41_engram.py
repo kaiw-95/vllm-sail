@@ -86,13 +86,15 @@ def _engram_lookup_kernel(
             row_scales = (peer + PEER_ROWS * DIM).to(tl.pointer_type(tl.uint8))
         else:
             row_weight, row_scales = weight, scales
+        row_weight += local * DIM
+        row_scales += local * (DIM // QUANT_BLOCK)
         values = tl.load(
-            row_weight + local[:, None] * DIM + cols[None, :],
+            row_weight[:, None] + cols[None, :],
             mask=owned[:, None],
             other=0.0,
         )
         scale = tl.load(
-            row_scales + local[:, None] * (DIM // QUANT_BLOCK) + scale_cols[None, :],
+            row_scales[:, None] + scale_cols[None, :],
             mask=owned[:, None],
             other=0,
         )
