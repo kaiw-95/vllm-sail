@@ -5,8 +5,7 @@
 # (_C, _moe_C, vllm_flash_attn, ...) that cannot run on PPU. vLLM must be
 # PPU-built from source (or a PPU wheel); vllm_sail/compat.py validates the
 # exact source pin or release version (>=0.32.0,<0.33.0) at runtime instead.
-# xgrammar 0.2.8 needs >=0.1.11; 0.1.15 breaks SAIL SDK 2.2 TileLang import.
-apache-tvm-ffi==0.1.11
+apache-tvm-ffi==0.1.9
 fastsafetensors>=0.3.2
 tokenspeed-mla==0.1.2
 # The upstream glm5next model imports Glm5NextTextConfig, which older
