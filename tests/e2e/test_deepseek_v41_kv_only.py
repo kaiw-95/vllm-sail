@@ -45,6 +45,11 @@ def test_kv_only_insert_matches_attention_cache(mode, tokens):
     torch.ops._C.fused_deepseek_v4_kv_rope_insert(
         kv, cache, slots, positions, rope, block_size, scale, mode == "mxfp8"
     )
+    if tokens == 0:
+        # The older attention entry points cannot launch an empty grid.
+        torch.testing.assert_close(cache.view(torch.uint8), expected.view(torch.uint8))
+        torch.testing.assert_close(kv, original, rtol=0, atol=0)
+        return
     if packed:
         torch.ops._C.fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert(
             q,
