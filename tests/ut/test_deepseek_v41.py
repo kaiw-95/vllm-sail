@@ -65,6 +65,60 @@ def test_standard_quantization_delegates_without_rewriting_config(quant_module):
     assert calls[1][1] is checkpoint
 
 
+@pytest.mark.parametrize("quantized_drafts", [(), (0, 1), (0,)])
+def test_dspark_context_projection_inherits_source_wkv_precision(
+    quant_module, modules, quantized_drafts
+):
+    import sys
+
+    module, _ = quant_module
+    helpers = load_patch("vllm_sail/models/deepseek_v41/config.py")
+    modules(
+        "vllm_sail.models.deepseek_v41.config",
+        checkpoint_layer_name=helpers.checkpoint_layer_name,
+    )
+    hf = SimpleNamespace(num_hidden_layers=40, n_mtp_layers=2)
+    modules(
+        "vllm.config",
+        get_current_vllm_config=lambda: SimpleNamespace(
+            model_config=SimpleNamespace(hf_config=hf)
+        ),
+    )
+    module.is_layer_skipped = (
+        lambda *, prefix, ignored_layers, **kwargs: prefix in ignored_layers
+    )
+    modules(
+        "compressed_tensors.quantization",
+        QuantizationArgs=lambda **kwargs: kwargs,
+        QuantizationStrategy=SimpleNamespace(CHANNEL="channel"),
+        QuantizationType=SimpleNamespace(FLOAT="float"),
+    )
+    modules(
+        "vllm.model_executor.layers.quantization.compressed_tensors.compressed_tensors",
+        CompressedTensorsLinearMethod=lambda config: ("channelwise", config),
+    )
+    modules(
+        "vllm.model_executor.layers.quantization.compressed_tensors.schemes.compressed_tensors_w8a8_fp8",
+        CompressedTensorsW8A8Fp8=lambda **kwargs: SimpleNamespace(**kwargs),
+    )
+    config = module.DeepseekV41FP8Config()
+    config.fp8_channelwise_layers = ["layers.0.attn.wq_a"] + [
+        f"mtp.{index}.attn.wkv" for index in quantized_drafts
+    ]
+    layer = sys.modules["vllm.model_executor.layers.linear"].LinearBase()
+    if len(quantized_drafts) == 1:
+        with pytest.raises(ValueError, match="matching WKV precision"):
+            config.get_quant_method(layer, "model.context_wkv_proj")
+    elif quantized_drafts:
+        assert config.get_quant_method(layer, "model.context_wkv_proj") == (
+            "channelwise",
+            config,
+        )
+        assert layer.scheme.weight_quant["strategy"] == "channel"
+    else:
+        assert type(config.get_quant_method(layer, "model.context_wkv_proj")) is object
+
+
 @pytest.mark.parametrize(
     "model_type,architectures",
     [
@@ -156,12 +210,26 @@ def test_quant_registration_is_lazy_idempotent_and_preserves_v4(modules, ppu):
     )
     modules("vllm_sail.models.deepseek_v4.quant_config", DeepseekV4FP8Config=v4)
     modules("vllm_sail.models.deepseek_v41.quant_config", DeepseekV41FP8Config=v41)
+    conversions = []
+    for module_name, class_name, name in (
+        ("fp8_to_int8", "Fp8ToInt8Config", "fp8-to-int8"),
+        ("fp8_to_bf16", "Fp8ToBf16Config", "fp8-to-bf16"),
+        ("bf16_to_int8", "Bf16ToInt8Config", "bf16-to-int8"),
+    ):
+        cls = type(class_name, (), {"get_name": staticmethod(lambda name=name: name)})
+        modules(
+            f"vllm_sail.model_executor.layers.quantization.{module_name}",
+            **{class_name: cls},
+        )
+        conversions.append((name, cls))
     registry = load_patch("vllm_sail/registry/quant_config/__init__.py")
     assert calls == []
     registry.register()
     registry.register()
     assert calls == [("mixed_precision_w4", mixed)] + (
-        [("deepseek_v4_fp8", v4), ("deepseek_v41_fp8", v41)] if ppu else []
+        conversions + [("deepseek_v4_fp8", v4), ("deepseek_v41_fp8", v41)]
+        if ppu
+        else []
     )
 
 
@@ -215,9 +283,11 @@ def test_v41_selector_preserves_cuda_and_other_backends(modules):
         load_patch("vllm_sail/patch/enhancement/models/deepseek_v41.py")
 
 
-@pytest.mark.parametrize("dequant_at_load", [True, False])
+@pytest.mark.parametrize(
+    "dequant_at_load,block_size", [(True, 32), (False, 32), (True, 128)]
+)
 def test_v41_projection_preserves_weights_and_uses_bf16_helper(
-    modules, dequant_at_load
+    modules, dequant_at_load, block_size
 ):
     calls = []
     loaded = SimpleNamespace(element_size=lambda: 2 if dequant_at_load else 1)
@@ -243,7 +313,7 @@ def test_v41_projection_preserves_weights_and_uses_bf16_helper(
     module = load_patch("vllm_sail/models/deepseek_v41/flashmla.py")
     attn = module.DeepseekV41FlashMLAAttention()
     attn.__dict__.update(
-        _o_proj_block_size=32,
+        _o_proj_block_size=block_size,
         wo_a=SimpleNamespace(weight=loaded, weight_scale=object()),
         wo_b=object(),
         rotary_emb=SimpleNamespace(cos_sin_cache=object()),
@@ -257,7 +327,11 @@ def test_v41_projection_preserves_weights_and_uses_bf16_helper(
     attn._o_proj(o, pos)
     args, kwargs = calls.pop()
     assert args[:2] == (o, pos) and args[3].weight is bf16 and args[4] is attn.wo_b
-    assert kwargs["heads_per_group"] == 8 and kwargs["einsum_recipe"] == (1, 1, 32)
+    assert kwargs["heads_per_group"] == 8 and kwargs["einsum_recipe"] == (
+        1,
+        1,
+        block_size,
+    )
     assert attn.wo_a.weight is loaded
     assert attn.forward_mqa is Upstream.forward_mqa
     assert attn._forward_prefill is Upstream._forward_prefill

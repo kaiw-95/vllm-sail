@@ -49,6 +49,7 @@ def _engram_lookup_kernel(
     SORTED: tl.constexpr,
     PACKED: tl.constexpr,
     OUT_STRIDE: tl.constexpr,
+    PEER_ROWS: tl.constexpr = 0,
 ):
     """Gather FP8 rows using the current upstream sorted/packed contract.
 
@@ -77,19 +78,27 @@ def _engram_lookup_kernel(
             owned &= (index >= vocab_start) & (index < vocab_end)
             local = index - vocab_start
         local = tl.where(owned, local, 0)
+        if PEER_ROWS:
+            owner = local // PEER_ROWS
+            peer = tl.load(weight + owner, mask=owned, other=0)
+            local -= owner * PEER_ROWS
+            row_weight = peer.to(tl.pointer_type(tl.float8e4nv))
+            row_scales = (peer + PEER_ROWS * DIM).to(tl.pointer_type(tl.uint8))
+        else:
+            row_weight, row_scales = weight, scales
         values = tl.load(
-            weight + local[:, None] * DIM + cols[None, :],
+            row_weight + local[:, None] * DIM + cols[None, :],
             mask=owned[:, None],
             other=0.0,
         )
         scale = tl.load(
-            scales + local[:, None] * (DIM // QUANT_BLOCK) + scale_cols[None, :],
+            row_scales + local[:, None] * (DIM // QUANT_BLOCK) + scale_cols[None, :],
             mask=owned[:, None],
             other=0,
         )
         if PACKED:
             tl.static_assert(
-                scales.dtype.element_ty == tl.uint8,
+                row_scales.dtype.element_ty == tl.uint8,
                 "Packed Engram output requires E8M0 byte scales",
             )
             width: tl.constexpr = DIM + DIM // QUANT_BLOCK
@@ -105,7 +114,7 @@ def _engram_lookup_kernel(
                 mask=valid[:, None] & (cols[None, :] % QUANT_BLOCK == 0),
             )
         else:
-            if scales.dtype.element_ty != tl.float32:
+            if row_scales.dtype.element_ty != tl.float32:
                 scale = (scale.to(tl.int32) << 23).to(tl.float32, bitcast=True)
             tl.store(
                 out + dst[:, None] * DIM + cols[None, :],

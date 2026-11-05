@@ -52,6 +52,7 @@ _INDEXER_ALIAS_CONSUMERS = {
         "vllm.models.deepseek_v4.attention",
         "vllm.models.deepseek_v41.common.ops",
         "vllm.models.deepseek_v41.attention",
+        "vllm.models.deepseek_v41.nvidia.specialized_decode.attention.indexer",
     ),
     "compress_norm_rope_store_triton": ("vllm.models.deepseek_v4.compressor",),
 }

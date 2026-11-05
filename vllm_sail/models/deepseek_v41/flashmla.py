@@ -29,7 +29,7 @@ class DeepseekV41FlashMLAAttention(UpstreamFlashMLAAttention):
     def _o_proj(self, o, positions):
         if not current_platform.is_ppu():
             return super()._o_proj(o, positions)
-        if self._o_proj_block_size != 32:
+        if self._o_proj_block_size != 32 and self.wo_a.weight.element_size() != 2:
             return PPUV4FlashMLAAttention._o_proj(self, o, positions)
 
         # Upstream ModelOpt expands the checkpoint's 32x32 scales to 1x32.
@@ -52,6 +52,6 @@ class DeepseekV41FlashMLAAttention(UpstreamFlashMLAAttention):
             nope_dim=self.nope_head_dim,
             rope_dim=self.rope_head_dim,
             o_lora_rank=self.o_lora_rank,
-            einsum_recipe=(1, 1, 32),
+            einsum_recipe=(1, 1, self._o_proj_block_size or 128),
             tma_aligned_scales=False,
         )

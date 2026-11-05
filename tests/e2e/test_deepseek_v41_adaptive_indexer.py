@@ -25,6 +25,8 @@ def _allocate_v41_indexer_cache(compress_ratio, dim):
         dtype=torch.uint8,
         cache_config=SimpleNamespace(block_size=128),
         compress_ratio=compress_ratio,
+        sparse_logits=False,
+        rocm_mxfp4=False,
     )
     config = SimpleNamespace(cache_config=SimpleNamespace(cache_dtype="fp8_ds_mla"))
     spec = DeepseekV4IndexerCache.get_kv_cache_spec(layer, config)

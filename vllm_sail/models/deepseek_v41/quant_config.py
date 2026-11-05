@@ -97,6 +97,35 @@ class DeepseekV41FP8Config(UpstreamDeepseekV41FP8Config):
 
             hf = get_current_vllm_config().model_config.hf_config
             prefix = checkpoint_layer_name(prefix, hf.num_hidden_layers)
+            if prefix == "context_wkv_proj":
+                # DSpark copies each draft layer's WKV weights and scales into
+                # one merged projection. Its shards must share one scheme.
+                count = (
+                    getattr(hf, "n_mtp_layers", None)
+                    or getattr(hf, "num_nextn_predict_layers", None)
+                    or 3
+                )
+                names = [f"mtp.{index}.attn.wkv" for index in range(count)]
+
+                def channelwise(name):
+                    return not is_layer_skipped(
+                        prefix=name,
+                        ignored_layers=self._checkpoint_ignored_layers,
+                        fused_mapping=self.packed_modules_mapping,
+                        match_mode="suffix",
+                    ) and is_layer_skipped(
+                        prefix=name,
+                        ignored_layers=self.fp8_channelwise_layers,
+                        fused_mapping=self.packed_modules_mapping,
+                        match_mode="suffix",
+                    )
+
+                schemes = [channelwise(name) for name in names]
+                if any(scheme != schemes[0] for scheme in schemes):
+                    raise ValueError(
+                        "DSpark context_wkv_proj requires matching WKV precision across draft layers"
+                    )
+                prefix = names[0]
             if is_layer_skipped(
                 prefix=prefix,
                 ignored_layers=self._checkpoint_ignored_layers,
