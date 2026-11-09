@@ -31,10 +31,9 @@ kernel source instead of a fixed deny-list: any registration whose Triton
 function names ``float8e4nv`` is dropped. Devices with native FP8 (PPU 890P and
 up) keep the upstream warmup. A registration whose *signature* needs the dtype
 (passed as a ``torch.float8_e4m3fn`` tensor) is invisible to source inspection,
-so a narrow per-kernel guard turns exactly that compile error into a warning
-rather than a dead worker. The registry owns the guard, not the runtime kernel:
-each Triton owner's compiler pool must finish inside that guard. Otherwise the
-registry's shared pool raises deferred errors after the guard has returned.
+so enhancement.triton_warmup filters those compile keys by their input metadata
+before submitting them to the unchanged shared async compiler pool. Compilation
+errors are not suppressed after submission.
 
 The target module imports the full worker/warmup stack at module scope. On
 hosts where that chain cannot run (e.g. a minimal test venv without vLLM's
@@ -70,7 +69,6 @@ _CUTEDSL_MODULE = "vllm.model_executor.warmup.cutedsl_warmup"
 # the filter independent of how a kernel was registered (class, decorated
 # function, or a subclass/wrapper defined by this plugin).
 _UNSUPPORTED_FP8_DTYPE = "float8e4nv"
-_UNSUPPORTED_FP8_ERRORS = ("fp8e4nv", "not supported in this architecture")
 
 
 def _called_name(node: ast.expr) -> str | None:
@@ -119,56 +117,8 @@ def _names_unsupported_fp8(jit_fn, seen: set[int] | None = None) -> bool:
 
 
 def _kernel_needs_unsupported_fp8(kernel) -> bool:
-    if isinstance(kernel, _GuardedWarmupKernel):
-        kernel = kernel._kernel
     jit_fn = getattr(kernel, "kernel", None)
     return jit_fn is not None and _names_unsupported_fp8(jit_fn)
-
-
-def _is_unsupported_fp8_error(exc: BaseException) -> bool:
-    message = str(exc)
-    return all(marker in message for marker in _UNSUPPORTED_FP8_ERRORS)
-
-
-class _GuardedWarmupKernel:
-    """Give one owner a complete compile-and-wait error boundary.
-
-    This adapter deliberately is not a VllmTritonJitKernel. The registry runs it
-    outside its shared async pool; the original owner's compile_many can still
-    compile its keys concurrently, but waits before returning to this guard.
-    The original owner remains untouched for runtime compilation.
-    """
-
-    def __init__(self, kernel) -> None:
-        self._kernel = kernel
-
-    @property
-    def get_warmup_keys(self):
-        # Preserve the bound signature: the registry inspects it to decide
-        # whether an unparameterized registration needs vllm_config injected.
-        return self._kernel.get_warmup_keys
-
-    def __hash__(self):
-        return hash(self._kernel)
-
-    def __eq__(self, other):
-        # Later registrations through the original singleton must still dedup.
-        if isinstance(other, _GuardedWarmupKernel):
-            other = other._kernel
-        return self._kernel is other or self._kernel == other
-
-    def compile_many(self, compile_keys) -> None:
-        try:
-            self._kernel.compile_many(compile_keys)
-        except Exception as exc:
-            if not _is_unsupported_fp8_error(exc):
-                raise
-            logger.warning(
-                "Skipping JIT warmup for %s: this PPU architecture cannot "
-                "compile fp8e4nv. %s",
-                type(self._kernel).__name__,
-                exc,
-            )
 
 
 def _exclude_ppu_cutedsl_registrations(worker) -> None:
@@ -216,17 +166,6 @@ def _exclude_sm80_fp8_registrations(worker) -> None:
             _UNSUPPORTED_FP8_DTYPE,
             ", ".join(type(kernel).__name__ for kernel in unsupported),
         )
-    guarded = [
-        (
-            kernel
-            if isinstance(kernel, _GuardedWarmupKernel)
-            else _GuardedWarmupKernel(kernel),
-            arguments,
-        )
-        for kernel, arguments in registrations.items()
-    ]
-    registrations.clear()
-    registrations.update(guarded)
 
 
 def _register_ppu_sampler_warmups(worker) -> None:
