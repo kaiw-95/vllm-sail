@@ -558,7 +558,115 @@ def test_warmup_propagates_other_compile_errors(modules):
         _run_ppu_warmup(modules, True, (8, 0), {broken: [((), {})]})
 
 
-def _run_ppu_warmup(modules, ppu, arch, registrations):
+def test_warmup_can_guard_a_read_only_owner(modules):
+    compiled = []
+
+    class FrozenOwner:
+        __slots__ = ()
+        kernel = staticmethod(_bf16_only)
+
+        def compile_many(self, keys):
+            compiled.append("attempted")
+            raise _FP8_COMPILE_ERROR
+
+    owner = FrozenOwner()
+    _run_ppu_warmup(modules, True, (8, 0), {owner: [((), {})]})
+    assert compiled == ["attempted"]
+    with pytest.raises(ValueError, match="fp8e4nv"):
+        owner.compile_many([0])
+
+
+@pytest.mark.parametrize("unsupported_fp8", [True, False])
+def test_warmup_guard_waits_for_async_compile_results(modules, unsupported_fp8):
+    """The upstream shared pool raises after each compile_many has returned."""
+    import contextlib
+    from concurrent.futures import ThreadPoolExecutor
+    from contextvars import ContextVar
+    from threading import Barrier
+
+    active_pool = ContextVar("warmup_pool", default=None)
+    compiled = []
+    failure = _FP8_COMPILE_ERROR if unsupported_fp8 else RuntimeError("build failed")
+
+    class AsyncKernel:
+        kernel = staticmethod(_bf16_only)
+        supports_parallel_compile = True
+
+        def __init__(self, name, error=None):
+            self.name, self.error = name, error
+
+        def get_warmup_keys(self, *, vllm_config):
+            assert vllm_config == "config"
+            return [0, 1]
+
+        def compile_many(self, keys):
+            barrier = Barrier(2)
+
+            def compile_one(key):
+                barrier.wait(timeout=5)
+                compiled.append((self.name, key))
+                if self.error is not None:
+                    raise self.error
+
+            def submit(pool, futures):
+                futures.extend(pool.submit(compile_one, key) for key in keys)
+
+            shared = active_pool.get()
+            if shared is not None:
+                submit(*shared)
+                return
+            with ThreadPoolExecutor(2) as pool:
+                futures = []
+                submit(pool, futures)
+                for future in futures:
+                    future.result()
+
+    broken, supported = AsyncKernel("broken", failure), AsyncKernel("supported")
+    registrations = {broken: [((), {})], supported: [((), {})]}
+    retained = registrations[supported]
+
+    def registry_warmup(items):
+        parallel, serial = [], []
+        for kernel in items:
+            keys = kernel.get_warmup_keys(vllm_config="config")
+            group = parallel if isinstance(kernel, AsyncKernel) else serial
+            group.append((kernel, keys))
+        with ThreadPoolExecutor(2) as pool:
+            futures = []
+            token = active_pool.set((pool, futures))
+            try:
+                for kernel, keys in parallel:
+                    kernel.compile_many(keys)
+                for future in futures:
+                    future.result()
+            finally:
+                active_pool.reset(token)
+        for kernel, keys in serial:
+            kernel.compile_many(keys)
+
+    expected = (
+        contextlib.nullcontext()
+        if unsupported_fp8
+        else pytest.raises(RuntimeError, match="build failed")
+    )
+    with expected:
+        _run_ppu_warmup(
+            modules, True, (8, 0), registrations, registry_warmup=registry_warmup
+        )
+        assert sorted(compiled) == [
+            ("broken", 0),
+            ("broken", 1),
+            ("supported", 0),
+            ("supported", 1),
+        ]
+        # A later registration through the original owner must still dedup.
+        registrations.setdefault(supported, retained)
+        assert len(registrations) == 2
+        assert registrations[supported] is retained
+        assert supported.supports_parallel_compile
+
+
+def _run_ppu_warmup(modules, ppu, arch, registrations, *, registry_warmup=None):
     """Install the PPU patch and run the warmup over ``registrations`` in order."""
     ns = types.SimpleNamespace
     import contextlib
@@ -600,8 +708,11 @@ def _run_ppu_warmup(modules, ppu, arch, registrations):
     )
 
     def upstream(actual_worker, *, process_local_only=False):
-        for actual_kernel, keys in list(registrations.items()):
-            actual_kernel.compile_many(keys)
+        if registry_warmup is None:
+            for actual_kernel, keys in list(registrations.items()):
+                actual_kernel.compile_many(keys)
+        else:
+            registry_warmup(registrations)
         return "result"
 
     provider = modules(
