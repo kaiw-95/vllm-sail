@@ -170,6 +170,46 @@ Record actual execution counts and skips from the PPU command above.
 
 ## 4. Run a model
 
+### Quick serving sanity
+
+The standalone sanity runner launches one installed model, checks readiness
+against a unique served-model identity, sends a deterministic arithmetic request,
+checks its complete final answer and stops its owned server process group:
+
+```bash
+python scripts/eval/ppu_model_sanity.py --list
+python scripts/eval/ppu_model_sanity.py \
+  --profile deepseek-v4-community-tp8 \
+  --checkpoint-root /path/to/datasets \
+  --output /absolute/new-sanity-attempt \
+  --with-stream
+```
+
+Profiles cover community DeepSeek V4 Flash 0731 TP8, its MXFP4/FP8-channel TP8
+and DP8/EP8 low-latency variants, GLM 5.2 MXFP4/FP8 TP8, and MiniMax M3
+FP8-channel TP8. Checkpoint suffixes and serving arguments are recorded in
+[`model_sanity_profiles.json`](../../scripts/eval/model_sanity_profiles.json).
+The dataset root defaults to `/ppusw/datasets`; set it to the actual mounted
+root. Each attempt requires a new output directory. Run profiles sequentially
+on free devices in the selected environment, preserving existing work.
+
+The default sends one ordinary request; `--with-stream` adds a streamed request.
+Both must return the final answer `42` and finish naturally. Truncated output,
+reasoning without a final answer, a wrong answer, HTTP failure, serving or
+shutdown ERROR logs, and failed cleanup fail the attempt. The process exits
+nonzero on failure and retains its invocation, installed package metadata,
+responses, metrics, serving log and result. Adjust readiness, request and token
+budgets explicitly with `--ready-timeout`, `--request-timeout`, and `--max-tokens`.
+Each request budget covers connection setup, response headers and the complete
+body, including a streamed response that never finishes a line. Expiration
+fails the attempt and enters service cleanup; cleanup has its own bounded wait.
+
+This is a short inference check for the selected configuration. It does not
+replace the accuracy evaluation below, kernel correctness checks, package-byte
+verification or evidence that every configured optimization was active.
+
+### Model verification
+
 Follow the [quickstart](../getting_started/quickstart.md) with a checkpoint
 appropriate for the available memory and supported precision. Confirm that:
 
@@ -181,6 +221,49 @@ appropriate for the available memory and supported precision. Confirm that:
 For MoE, quantized or multi-device workloads, repeat the check using the intended
 expert backend, checkpoint layout and parallelism. A small dense-model smoke
 test does not cover those paths.
+
+### Zhenwu 810E serving sanity
+
+The [810E sanity runner](../../scripts/ci/ppu_810e_sanity.py) provides eight
+presets covering DeepSeek V4 W4A8/INT8 (TP4, TP8 and DP16/EP16 low latency),
+GLM-5.2 INT8 TP16, Kimi-K2.6 W4A8 TP16, Qwen3.5 BF16 TP2 and INT8 TP8/EP8,
+and MiniMax M3 BF16 TP16. Run it inside a prepared SAIL SDK container with the
+installed, compatible vLLM and vLLM SAIL wheels. It does not install packages or
+reserve hardware. Select idle cards before running; the full catalog needs 16
+visible 810E devices. It changes the HTTP bind address to loopback and assigns a
+served model name; model flags remain those in the preset catalog.
+
+```bash
+python scripts/ci/ppu_810e_sanity.py --list
+python scripts/ci/ppu_810e_sanity.py --dry-run
+python scripts/ci/ppu_810e_sanity.py \
+  --models qwen3.5-35b_bf16_tp2 \
+  --checkpoint-root /ppusw/datasets/checkpoints \
+  --results-dir /tmp/810e-sanity-qwen
+```
+
+Omit `--models` to run all presets sequentially. To use a checkpoint mounted at a
+different path, pass `--checkpoint KEY=/absolute/checkpoint/path`; the resolved
+path and config hash are recorded. Missing checkpoints or insufficient devices
+fail the selected case. The results directory must be new.
+The Qwen 397B INT8 preset uses the checkpoint directory suffix `W8A8-INT8`.
+
+Each case checks `/health` and `/v1/models`, sends a chat request and a repeated
+request, and requires nonempty content, generated tokens and a normal `stop`
+finish reason. Truncation at the output limit fails; the default budget is
+4096 output tokens per request (`--max-tokens` overrides it). DP16 uses a
+16-request burst after the first request; this does not establish per-rank
+routing. Responses with reasoning but empty content fail. The runner records exact commands,
+package paths and versions, device capabilities, startup logs, requests,
+responses and JSON results. It terminates its own server process group after
+each case. Any failed case makes the command exit nonzero. Startup and request
+timeouts default to 3600 and 600 seconds and can be overridden.
+The startup budget also sets vLLM's engine-ready timeout, so the multi-frontend
+DP launch cannot terminate earlier at its shorter internal default.
+
+These presets are test inputs, not a declaration of model support. Passing
+establishes inference for the recorded checkpoint and configuration; it does
+not establish dataset accuracy, tool-call correctness or benchmark performance.
 
 ## 5. Report correctness and performance
 

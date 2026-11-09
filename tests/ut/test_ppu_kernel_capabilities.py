@@ -4,13 +4,13 @@
 from __future__ import annotations
 
 import ast
-import importlib.util
 import sys
 import types
 from pathlib import Path
 
 import pytest
 
+from tests.support.modules import load_patch
 from tests.support.source import function
 
 ROOT = Path(__file__).parents[2]
@@ -60,52 +60,64 @@ def test_optional_gate_consumer_inventory_matches_upstream(
     assert discovered == {name: set(consumers) for name, consumers in inventory.items()}
 
 
-@pytest.fixture
-def modules(monkeypatch, patch_utils_module):
-    loaded = {}
+def complete_warmup_contract(modules, provider, worker, platform, *, entered=None):
+    """Strict external callbacks for the real copied warmup body."""
+    import time
 
-    def add(name, **attrs):
-        if name not in loaded:
-            mod = types.ModuleType(name)
-            mod.__path__ = []
-            mod.__package__ = name.rpartition(".")[0]
-            loaded[name] = mod
-            monkeypatch.setitem(sys.modules, name, mod)
-            parent, _, leaf = name.rpartition(".")
-            if parent:
-                setattr(add(parent), leaf, mod)
-        loaded[name].__dict__.update(attrs)
-        return loaded[name]
+    ns = types.SimpleNamespace
+    entered = entered or (lambda: None)
+    platform.is_cuda = lambda: True
+    platform.is_rocm = lambda: False
+    platform.is_device_capability_family = lambda _: False
+    worker.use_v2_model_runner = True
+    worker.model_runner.attn_groups = []
+    worker.vllm_config.model_config = ns()
+    worker.vllm_config.compilation_config = ns(cudagraph_capture_sizes=[])
+    config = worker.vllm_config.kernel_config
+    if not hasattr(config, "enable_cutedsl_warmup"):
+        config.enable_cutedsl_warmup = False
+    config.enable_flashinfer_autotune = False
 
-    add(
-        "vllm_sail.patch.utils",
-        **{
-            name: getattr(patch_utils_module, name)
-            for name in ("patch", "PATCH_MARKER")
-        },
+    def registry_warmup():
+        entered()
+        for kernel, keys in list(
+            worker.model_runner.jit_warmup_registry._registrations.items()
+        ):
+            kernel.compile_many(keys)
+
+    worker.model_runner.jit_warmup_registry.warmup = registry_warmup
+    callbacks = {
+        "qwen_triton_warmup": lambda runner, config: entered(),
+        "qwen_vl_triton_warmup": lambda runner: None,
+        "mamba_triton_warmup": lambda runner: None,
+        "kimi_k3_triton_warmup": lambda worker: None,
+        "watermark_sample_warmup": lambda worker: None,
+        "qwen4_exp_qsa_triton_warmup": lambda worker: None,
+        "_warmup_bf16x3_router_gemm": lambda model, tokens: None,
+        "_warmup_ll_bf16_router_gemm": lambda model: None,
+        "_warmup_gemm_rs_ar": lambda: None,
+        "flashinfer_sparse_mla_decode_autotune_warmup": lambda worker: None,
+        "deepseek_v4_sparse_mla_attention_warmup": lambda worker: None,
+        "b12x_warmup": lambda worker, sizes: None,
+        "mixed_batch_attention_warmup": lambda worker: None,
+        "is_deep_gemm_supported": lambda: False,
+        "has_flashinfer": lambda: False,
+    }
+    provider.__dict__.update(
+        callbacks,
+        current_platform=platform,
+        time=time,
+        envs=ns(
+            VLLM_ALLREDUCE_USE_FLASHINFER_PCIE_IPC=False, VLLM_DEEP_GEMM_WARMUP="skip"
+        ),
+        logger=ns(
+            info=lambda *a: None, info_once=lambda *a: None, exception=lambda *a: None
+        ),
     )
-    spec = importlib.util.spec_from_file_location(
-        "vllm_sail.patch.bodies", ROOT / "vllm_sail/patch/bodies.py"
+    modules(
+        "vllm.model_executor.warmup.step5_dsa_warmup",
+        step5_dsa_warmup=lambda worker: None,
     )
-    helpers = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(helpers)
-    add("vllm_sail.patch.bodies", bind_body=helpers.bind_body)
-    return add
-
-
-def load_patch(relative):
-    spec = importlib.util.spec_from_file_location("_capability_patch", ROOT / relative)
-    mod = importlib.util.module_from_spec(spec)
-    previous = sys.modules.get(spec.name)
-    sys.modules[spec.name] = mod
-    try:
-        spec.loader.exec_module(mod)
-    finally:
-        if previous is None:
-            sys.modules.pop(spec.name, None)
-        else:
-            sys.modules[spec.name] = previous
-    return mod
 
 
 @pytest.mark.parametrize(
@@ -421,15 +433,29 @@ def test_warmup_excludes_cutedsl_only_on_ppu(
         kernel_warmup=upstream,
         cutedsl_warmup=legacy,
     )
+    entered = False
+
+    def enter_body():
+        nonlocal entered
+        if not entered:
+            calls.append(("upstream", process_local_only))
+            entered = True
+
+    complete_warmup_contract(
+        modules,
+        provider,
+        worker,
+        sys.modules["vllm.platforms"].current_platform,
+        entered=enter_body,
+    )
     modules(
         "vllm_sail.model_executor.warmup.deep_gemm_warmup",
         deep_gemm_warmup=lambda model, size: calls.append((model, size)),
     )
     patched = load_patch("vllm_sail/patch/enhancement/kernel_warmup.py")
     patched._ppu_deep_gemm_warmup_enabled = lambda: True
-    assert (
-        provider.kernel_warmup(worker, process_local_only=process_local_only)
-        == "result"
+    assert provider.kernel_warmup(worker, process_local_only=process_local_only) == (
+        None if ppu else "result"
     )
     expected = []
     if ppu:
@@ -522,7 +548,9 @@ def test_warmup_excludes_fp8_kernels_without_native_fp8(
     clean = _fixture_kernel("PackSeqTritonKernel", _bf16_only, compiled)
     registrations = {item: [((), {})] for item in (direct, inlined, clean)}
 
-    assert _run_ppu_warmup(modules, ppu, arch, registrations) == "result"
+    assert _run_ppu_warmup(modules, ppu, arch, registrations) == (
+        None if ppu else "result"
+    )
 
     skipped = fp8_skipped and ppu
     assert (direct in registrations) is not skipped
@@ -540,7 +568,7 @@ def test_warmup_tolerates_signature_level_fp8_on_sm80(modules):
     clean = _fixture_kernel("PackSeqTritonKernel", _bf16_only, compiled)
 
     registrations = {signature_only: [((), {})], clean: [((), {})]}
-    assert _run_ppu_warmup(modules, True, (8, 0), registrations) == "result"
+    assert _run_ppu_warmup(modules, True, (8, 0), registrations) is None
 
     # Source inspection cannot see the dtype, so the registration is kept and
     # the guard turns the resulting compile error into a warning.
@@ -720,6 +748,13 @@ def _run_ppu_warmup(modules, ppu, arch, registrations, *, registry_warmup=None):
         kernel_warmup=upstream,
         cutedsl_warmup=lambda: None,
     )
+    complete_warmup_contract(
+        modules, provider, worker, sys.modules["vllm.platforms"].current_platform
+    )
+    if registry_warmup is not None:
+        worker.model_runner.jit_warmup_registry.warmup = lambda: registry_warmup(
+            registrations
+        )
     modules("vllm.model_executor.warmup.cutedsl_warmup", cutedsl_warmup=lambda: None)
     patched = load_patch("vllm_sail/patch/enhancement/kernel_warmup.py")
     patched._ppu_deep_gemm_warmup_enabled = lambda: False

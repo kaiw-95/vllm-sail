@@ -212,17 +212,21 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         help="Rewrite golden outputs under tests/e2e/models/_golden instead of comparing",
     )
     parser.addoption(
-        "--update-baseline",
-        action="store_true",
-        help="Rewrite performance baselines instead of asserting against them",
-    )
-    parser.addoption(
         "--baseline-root",
         action="store",
         default=None,
         help=(
-            "Override the perf baseline root (default: tests/e2e/perf/baselines); "
-            "used by CI to read/write per-chip baseline JSON in a workspace dir"
+            "Override the read-only perf golden root "
+            "(default: tests/e2e/perf/baselines)"
+        ),
+    )
+    parser.addoption(
+        "--baseline-output-root",
+        action="store",
+        default=None,
+        help=(
+            "Write pending candidates under this root instead of the golden root; "
+            "CI sets this to its artifact directory"
         ),
     )
 
@@ -442,13 +446,13 @@ def offline_llm() -> Callable[..., Any]:
 def perf_baseline(request: pytest.FixtureRequest) -> Iterator[dict[str, Any]]:
     """Perf-baseline handle backed by ``tests/e2e/perf/_baseline_store``.
 
-    Skipped without a real device. Resolves the active chip key, the baseline
-    root (``--baseline-root`` override, else ``tests/e2e/perf/baselines``) and
-    the ``--update-baseline`` flag, then exposes a ``store(suite)`` factory that
-    returns one shared :class:`BaselineStore` per suite (so every metric of a
-    run accumulates in the same document). At session teardown each store is
+    Skipped without a real device. Resolves the active chip key and the read-only
+    golden root (``--baseline-root`` override, else ``tests/e2e/perf/baselines``)
+    plus an optional writable candidate root (``--baseline-output-root``), then
+    exposes a ``store(suite)`` factory that returns one shared
+    :class:`BaselineStore` per suite. At session teardown each candidate is
     persisted -- the first run on a chip writes its ``status="pending"``
-    baseline -- and, when ``VLLM_SAIL_PERF_REPORT_DIR`` is set, the comparison
+    candidate -- and, when ``VLLM_SAIL_PERF_REPORT_DIR`` is set, the comparison
     report (``perf_report.json`` / ``perf_report.md``) is emitted for CI upload.
     The store module is pure standard library and is imported lazily here, so
     CPU-only collection never reaches it.
@@ -463,7 +467,9 @@ def perf_baseline(request: pytest.FixtureRequest) -> Iterator[dict[str, Any]]:
         if override
         else Path(__file__).parent / "e2e" / "perf" / "baselines"
     )
-    update = request.config.getoption("--update-baseline")
+    output_override = request.config.getoption("--baseline-output-root")
+    output_root = Path(output_override) if output_override else root
+    update = False
 
     from tests.e2e.perf._baseline_store import BaselineStore
 
@@ -471,10 +477,16 @@ def perf_baseline(request: pytest.FixtureRequest) -> Iterator[dict[str, Any]]:
 
     def store(suite: str) -> Any:
         if suite not in stores:
-            stores[suite] = BaselineStore(root, chip, suite, update=update)
+            stores[suite] = BaselineStore(root, chip, suite, output_root=output_root)
         return stores[suite]
 
-    yield {"update": update, "root": root, "chip": chip, "store": store}
+    yield {
+        "update": update,
+        "root": root,
+        "output_root": output_root,
+        "chip": chip,
+        "store": store,
+    }
 
     report_dir = os.environ.get("VLLM_SAIL_PERF_REPORT_DIR")
     for suite, baseline_store in stores.items():
@@ -518,3 +530,41 @@ def patch_utils_module() -> Iterator[types.ModuleType]:
         yield module
     finally:
         sys.modules.pop(name, None)
+
+
+@pytest.fixture
+def modules(monkeypatch, patch_utils_module):
+    loaded = {}
+
+    def add(name, **attrs):
+        if name not in loaded:
+            mod = types.ModuleType(name)
+            mod.__path__ = (
+                [str(Path(__file__).parents[1].joinpath(*name.split(".")))]
+                if name.startswith("vllm_sail")
+                else []
+            )
+            mod.__package__ = name.rpartition(".")[0]
+            loaded[name] = mod
+            monkeypatch.setitem(sys.modules, name, mod)
+            parent, _, leaf = name.rpartition(".")
+            if parent:
+                setattr(add(parent), leaf, mod)
+        loaded[name].__dict__.update(attrs)
+        return loaded[name]
+
+    add(
+        "vllm_sail.patch.utils",
+        **{
+            name: getattr(patch_utils_module, name)
+            for name in ("patch", "PATCH_MARKER")
+        },
+    )
+    spec = importlib.util.spec_from_file_location(
+        "vllm_sail.patch.bodies",
+        Path(__file__).parents[1] / "vllm_sail/patch/bodies.py",
+    )
+    helpers = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helpers)
+    add("vllm_sail.patch.bodies", bind_body=helpers.bind_body)
+    return add
