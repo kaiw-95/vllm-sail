@@ -201,8 +201,7 @@ STABLE_TORCH_LIBRARY_FRAGMENT(_C, ops) {
       "int block_size, Tensor!? q_out, Tensor!? index_q_out, "
       "str kv_cache_dtype, bool skip_index_branch=False, "
       "Tensor!? q_fp8_out=None, float q_fp8_scale=1.0, "
-      "Tensor? kv_k_scale=None, Tensor? kv_v_scale=None, "
-      "bool write_qkv=True) -> ()");
+      "Tensor? kv_k_scale=None, Tensor? kv_v_scale=None) -> ()");
 
 #ifdef VLLM_ENABLE_FUSED_KDA_DECODE
 #endif

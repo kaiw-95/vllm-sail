@@ -7,9 +7,8 @@ Sources in vLLM:
 - vllm/v1/worker/gpu_model_runner.py: GPUModelRunner.may_reinitialize_input_batch
 - vllm/v1/worker/gpu/spec_decode/rejection_sampler_utils.py: rejection_sample
 
-Moved from SAIL main 3bdf760342984f7d0987f3d27e674a2fd4ddd5d6, including
-its draft-logits cache row-mapping support. The selected upstream pin is
-8b10bda57ceab3a741d2fb3718af48cef691023e. This records provenance, not runtime
+Adapted to vLLM v0.33.0 and its draft-logits tensor contract at
+4ba787ec9959e566d3b587a796dff07673324da5. This records provenance, not runtime
 version selection. Retain the target-source body drift check when reviewing
 upgrades. Globals are supplied separately by bind_body.
 """
@@ -93,7 +92,8 @@ def may_reinitialize_input_batch(self, kv_cache_config: KVCacheConfig) -> None:
 def rejection_sample(
     # [num_logits, V]
     target_logits: torch.Tensor,
-    draft_logits_cache: DraftLogitsCache | None,
+    # [max_num_reqs, num_speculative_steps, V]
+    draft_logits: torch.Tensor | None,
     # [num_logits]
     draft_sampled: torch.Tensor,
     # [num_reqs + 1]
@@ -124,11 +124,6 @@ def rejection_sample(
     fly_entropy_top_k: int = 3,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     assert target_logits.ndim == 2 and target_logits.stride(-1) == 1
-    draft_logits = None
-    draft_logits_row_mapping = None
-    if draft_logits_cache is not None:
-        draft_logits = draft_logits_cache.values
-        draft_logits_row_mapping = draft_logits_cache.row_mapping
     assert draft_logits is None or (
         draft_logits.ndim == 3 and draft_logits.stride(-1) == 1
     )
@@ -221,7 +216,6 @@ def rejection_sample(
         draft_logits,
         draft_logits_stride_0,
         draft_logits_stride_1,
-        draft_logits_row_mapping,
         expanded_idx_mapping,
         expanded_local_pos,
         temperature,
@@ -254,7 +248,6 @@ def rejection_sample(
             draft_logits,
             draft_logits_stride_0,
             draft_logits_stride_1,
-            draft_logits_row_mapping,
             draft_local_max,
             draft_local_max.stride(0),
             draft_local_sumexp,
@@ -289,7 +282,6 @@ def rejection_sample(
                 draft_logits,
                 draft_logits_stride_0,
                 draft_logits_stride_1,
-                draft_logits_row_mapping,
                 draft_local_max,
                 draft_local_max.stride(0),
                 draft_local_sumexp,
@@ -336,7 +328,6 @@ def rejection_sample(
         draft_logits,
         draft_logits_stride_0,
         draft_logits_stride_1,
-        draft_logits_row_mapping,
         draft_local_max,
         draft_local_max.stride(0),
         draft_local_sumexp,
@@ -384,7 +375,6 @@ def rejection_sample(
         draft_logits,
         draft_logits_stride_0,
         draft_logits_stride_1,
-        draft_logits_row_mapping,
         draft_rejected_logsumexp,
         num_sampled,
         cu_num_logits,
@@ -424,7 +414,9 @@ def rejection_sample(
         expanded_idx_mapping,
         temperature,
         PADDED_RESAMPLE_NUM_BLOCKS=padded_resample_num_blocks,
+        # PPU MODIFICATION: begin
         # Keep the PPU sampled-count update within one warp.
         num_warps=1,
+        # PPU MODIFICATION: end
     )
     return sampled, num_sampled

@@ -81,12 +81,11 @@ def test_resample_dispatch_binds_the_upstream_mask_argument(
 
 
 @pytest.mark.upstream_source
-@pytest.mark.parametrize("shards", [None, 1, 4])
 @pytest.mark.parametrize(
     "mode", ["ordinary", "block", "watermark", "fly", "synthetic", "no-draft"]
 )
-def test_all_sampler_kernel_calls_bind_the_upstream_draft_shard_contract(
-    upstream_source_root, shards, mode
+def test_all_sampler_kernel_calls_bind_the_upstream_draft_tensor_contract(
+    upstream_source_root, mode
 ):
     upstream = (
         upstream_source_root
@@ -137,11 +136,8 @@ def test_all_sampler_kernel_calls_bind_the_upstream_draft_shard_contract(
     sampler = function(
         "vllm_sail/patch/_upstream/runtime.py", "rejection_sample", namespace
     )
-    # A replicated cache has no mapping. Sharded rows are assigned explicitly
-    # and no longer derivable by dividing a request-state slot by shard count.
-    mapping = None if shards is None else Tensor(32, dtype="int32")
     draft = Tensor(8, 7, 129)
-    cache = None if mode == "no-draft" else NS(values=draft, row_mapping=mapping)
+    cache = None if mode == "no-draft" else draft
     kwargs = {}
     if mode == "block":
         kwargs["use_block_verification"] = True
@@ -174,8 +170,6 @@ def test_all_sampler_kernel_calls_bind_the_upstream_draft_shard_contract(
     assert set(calls) == expected
     for symbol, (bound, _) in calls.items():
         if symbol != "_insert_resampled_kernel":
-            assert bound["draft_logits_row_mapping_ptr"] is (
-                None if cache is None else mapping
-            )
+            assert bound["draft_logits_ptr"] is cache
     assert calls["_insert_resampled_kernel"][1]["num_warps"] == 1
     assert sample.shape == (3, 8) and count.shape == (3,)

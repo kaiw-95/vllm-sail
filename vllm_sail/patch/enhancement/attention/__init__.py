@@ -30,7 +30,6 @@ from vllm_sail.patch.enhancement.attention import (
     mhc_delayed,  # noqa: F401
     mla_attention,  # noqa: F401
     mla_indexer,  # noqa: F401
-    minimax_dspark,  # noqa: F401
     musespark_routing,  # noqa: F401
     mla_prefill_flash_attn,  # noqa: F401
     sparse_attn_indexer,  # noqa: F401
