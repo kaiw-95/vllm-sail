@@ -8,11 +8,14 @@ place of torch/vLLM. These tests check routing and layouts, not device numerics.
 from __future__ import annotations
 
 import ast
+import sys
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+
+from tests.support.source import function
 
 
 @pytest.fixture
@@ -127,6 +130,110 @@ def test_dispatch_preserves_bias_priority_layout_and_output_shape(
         assert kwargs["azp"] is zero_point
     assert triton.call_count == int(triton_quant and not asymmetric)
     assert native_quant.call_count == int(not triton_quant or asymmetric)
+
+
+@pytest.mark.upstream_source
+@pytest.mark.parametrize("cap", [(8, 0), (8, 9)])
+@pytest.mark.parametrize("channelwise", [False, True])
+@pytest.mark.parametrize("static_input", [False, True])
+def test_int8_initialization_uses_only_int8_registry(
+    kernel, monkeypatch, upstream_source_root, cap, channelwise, static_input
+):
+    _, environment = kernel
+    platform = SimpleNamespace(
+        _enum="cuda",
+        is_ppu=lambda: True,
+        get_device_capability=lambda: cap,
+    )
+    environment["current_platform"] = platform
+    Int8Kernel = environment["PPUInt8ScaledMMLinearKernel"]
+
+    def initialize(self, config, layer_param_names):
+        self.config, self.layer_param_names = config, layer_param_names
+
+    monkeypatch.setattr(Int8Kernel, "__init__", initialize)
+    Int8Kernel.is_supported = classmethod(function(
+        "vllm_sail/model_executor/kernels/linear/scaled_mm/ppu.py",
+        "PPUInt8ScaledMMLinearKernel.is_supported", environment))
+    Int8Kernel.can_implement = classmethod(lambda cls, config: (True, None))
+    for name in ("PPUCutlassFP8ScaledMMLinearKernel", "PPUDeepGemmFP8ScaledMMLinearKernel", "PPUCutlassFp8BlockScaledMMKernel", "PPUDeepGemmFp8BlockScaledMMKernel"):
+        environment[name] = type(name, (), {"is_supported": classmethod(lambda *a: (True, None))})
+    fp8_probes = []
+    for name in (
+        "PPUCutlassFP8ScaledMMLinearKernel",
+        "PPUDeepGemmFP8ScaledMMLinearKernel",
+    ):
+        probe = Mock(return_value=(True, None))
+        monkeypatch.setattr(environment[name], "is_supported", classmethod(probe))
+        fp8_probes.append(probe)
+    ppu_module = ModuleType("vllm_sail.model_executor.kernels.linear.scaled_mm.ppu")
+    ppu_module.__dict__.update(environment)
+    monkeypatch.setitem(
+        sys.modules, "vllm_sail.model_executor.kernels.linear.scaled_mm.ppu", ppu_module
+    )
+    mxfp8_module = ModuleType("vllm_sail.model_executor.kernels.linear.mxfp8")
+    mxfp8_module.PPUEmulationMxfp8LinearKernel = type(
+        "PPUEmulationMxfp8LinearKernel", (), {}
+    )
+    monkeypatch.setitem(sys.modules, mxfp8_module.__name__, mxfp8_module)
+    plan = dict(
+        function(
+            "vllm_sail/registry/linear_kernels/__init__.py", "_selection_plan", {}
+        )()
+    )
+    assert plan["int8"] == [Int8Kernel]
+    upstream = upstream_source_root / "vllm/model_executor/kernels/linear/__init__.py"
+    supported = function(
+        upstream,
+        "is_supported_and_can_implement_kernel",
+        {
+            "envs": SimpleNamespace(VLLM_DISABLED_KERNELS=()),
+            "current_platform": platform,
+        },
+    )
+    selected_quantizations = []
+
+    def resolve(kernels, kind, *, quantization):
+        selected_quantizations.append(quantization)
+        return kernels
+
+    choose = function(
+        upstream,
+        "choose_scaled_mm_linear_kernel",
+        {
+            "current_platform": platform,
+            "is_supported_and_can_implement_kernel": supported,
+            "_resolve_backend_kernels": resolve,
+        },
+    )
+    init = function(
+        upstream,
+        "init_int8_linear_kernel",
+        {
+            "Int8ScaledMMLinearLayerConfig": SimpleNamespace,
+            "choose_scaled_mm_linear_kernel": choose,
+            "_POSSIBLE_INT8_KERNELS": {"cuda": plan["int8"]},
+            "_POSSIBLE_FP8_KERNELS": {"cuda": plan["fp8"]},
+            "logger": SimpleNamespace(info_once=lambda *args, **kwargs: None),
+        },
+    )
+    instance = init(channelwise, static_input, True, "CompressedTensorsW8A8Int8")
+    assert type(instance) is Int8Kernel
+    assert vars(instance.config) == dict(
+        is_channelwise=channelwise,
+        is_static_input_scheme=static_input,
+        input_symmetric=True,
+    )
+    assert instance.layer_param_names == [
+        "weight",
+        "weight_scale",
+        "input_scale",
+        "input_zero_point",
+        "azp_adj",
+    ]
+    assert selected_quantizations == ["int8_w8a8"]
+    for probe in fp8_probes:
+        probe.assert_not_called()
 
 
 @pytest.mark.parametrize("backend", [None, "deepgemm", "acext", "triton"])
