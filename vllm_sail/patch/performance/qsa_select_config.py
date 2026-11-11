@@ -62,11 +62,11 @@ i.e. faster, for the ``small_profile_limit`` reason below. At all 27 prefill
 points it picks the byte-identical config to 0.28's and measures residual 1.00x,
 which is what localises the loss to the table rather than the kernel.
 
-Those measurements carry over to the pin this branch tracks (``8b10bda``, what
+The same default table is present in this branch's pin (``4ba787e``, what
 both ``csrc/upstream/manifest.toml`` and ``.github/vllm-main-verified.commit``
 resolve to): its default table is byte-identical to ``v0.31.0``'s, so both
 regressions above are still there and M890 still matches no dispatch branch --
-``v0.31.0..8b10bda`` adds only an ``is_fp8 and _is_sm80()`` override, and (8,9)
+``v0.31.0..4ba787e`` adds only an ``is_fp8 and _is_sm80()`` override, and (8,9)
 does not satisfy ``_is_sm80`` either. That override sits after the table in the
 original ``_select_config``, which ``install()`` delegates to off PPU, so it is
 preserved untouched.
@@ -118,7 +118,7 @@ from __future__ import annotations
 import importlib
 from functools import lru_cache
 
-AFFECTED_VERSIONS = ">=0.32.0,<0.33.0"
+AFFECTED_VERSIONS = ">=0.33.0,<0.34.0"
 
 _QSA_OPS_MODULE = "vllm.models.qwen4_exp.nvidia.ops.qsa"
 

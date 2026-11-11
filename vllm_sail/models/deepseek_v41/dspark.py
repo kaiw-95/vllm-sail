@@ -45,7 +45,7 @@ class DSparkDeepseekV41ForCausalLM(UpstreamDSparkV41, SupportsQuant):
 
 
 # Preserve V4.1 draft expert counts, name mapping and TP slicing without the V4 loader.
-# Based on vLLM 8b10bda57ceab3a741d2fb3718af48cef691023e:
+# Based on vLLM 4ba787ec9959e566d3b587a796dff07673324da5:
 # vllm/models/deepseek_v41/nvidia/dspark.py. Retain its body and globals.
 # ruff: noqa: F821
 def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
@@ -91,7 +91,6 @@ def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
     loaded_params: set[str] = set()
     loaded_confidence_head = False
 
-    weights = _duplicate_context_wkv_weights(weights, len(self.model.layers))
     for name, loaded_weight in weights:
         mapped = self._remap_dspark_name(name)
         if mapped is None:
@@ -125,12 +124,6 @@ def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
         # PPU MODIFICATION: begin
         name = self._resolve_scale_name(name, params_dict)
         # PPU MODIFICATION: end
-        if name.startswith("model.context_wkv_proj."):
-            param = params_dict[name]
-            param.weight_loader(param, loaded_weight, loaded_weight.shard_id)
-            loaded_params.add(name)
-            continue
-
         # E8M0 expert scales: keep raw exponent bytes.
         if ".experts." in name:
             if "weight_scale" in name and loaded_weight.dtype == torch.float8_e8m0fnu:

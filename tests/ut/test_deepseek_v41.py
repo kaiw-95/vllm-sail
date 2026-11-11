@@ -580,7 +580,6 @@ def test_v41_draft_loads_scales_from_actual_destinations(
     provider.get_tensor_model_parallel_rank = lambda: 1
     provider.default_weight_loader = lambda p, w: calls.append((p.name, w, (), {}))
     provider.logger = SimpleNamespace(info_once=lambda *args: None)
-    provider._duplicate_context_wkv_weights = lambda weights, count: weights
     provider.extract_layer_index = lambda name: int(name.split(".")[2])
 
     def parameter(name):
@@ -592,7 +591,6 @@ def test_v41_draft_loads_scales_from_actual_destinations(
 
     expert_scale = "weight_scale_inv" if expert_dtype == "fp8" else "weight_scale"
     pairs = [
-        ("context_wkv_proj.scale", f"model.context_wkv_proj.{dense_scale}", 0),
         (
             "mtp.0.attn.wq_a.scale",
             f"model.layers.0.attn.fused_wqa_wkv.{dense_scale}",
@@ -667,8 +665,6 @@ def test_v41_draft_loads_scales_from_actual_destinations(
     model.process_weights_after_loading = lambda: processed.append(True)
 
     def remap(name):
-        if name.startswith("context_wkv_proj."):
-            return "model." + name
         match = re.fullmatch(r"mtp\.(\d+)\.(.*)", name)
         if not match:
             return None
@@ -682,12 +678,14 @@ def test_v41_draft_loads_scales_from_actual_destinations(
         return f"model.layers.{stage}.{rest}"
 
     model._remap_dspark_name = remap
-    weights = [SimpleNamespace(dtype="int8", shard_id=0) for _ in pairs]
+    weights = [SimpleNamespace(dtype="int8") for _ in pairs]
     stream = [(name, weights[i]) for i, (name, _, _) in enumerate(pairs)]
     stream.insert(0, ("layers.0.attn.wq_a.scale", object()))
+    # v0.33 has no separate context-WKV projection in the draft.
+    stream.insert(0, ("context_wkv_proj.scale", object()))
     assert model.load_weights(iter(stream)) == set(params)
     assert counts == [draft_experts or 384]
-    assert processed == []  # The main loader defers processing to the model runner.
+    assert processed == []  # Weight processing is deferred to the model runner.
     assert model.model.confidence_head is None
     assert len(calls) == len(pairs)
     for call, (_, target, shard), weight in zip(calls, pairs, weights, strict=False):
