@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from tests.support.modules import load_patch
-from tests.support.source import definition, function
+from tests.support.source import ROOT, definition, function
 
 
 @pytest.mark.upstream_source
@@ -452,7 +452,7 @@ def test_v41_projection_dispatches_by_quantization(
     )
     modules(
         "vllm.models.deepseek_v4.nvidia.ops.o_proj",
-        deep_gemm_fp8_o_proj=lambda *args: None,
+        deep_gemm_fp8_o_proj=lambda *args, **kwargs: "bf16",
     )
     modules("vllm_sail.models.deepseek_v4.ops.o_proj", deep_gemm_int8_o_proj=int8)
     modules("vllm_sail.models.deepseek_v4.flashmla", DeepseekV4FlashMLAAttention=PPUV4)
@@ -467,8 +467,14 @@ def test_v41_projection_dispatches_by_quantization(
     published.value = not published.value
     attn.__dict__.update(
         _o_proj_block_size=128,
-        wo_a=SimpleNamespace(weight=SimpleNamespace(dtype=weight_dtype)),
+        wo_a=SimpleNamespace(
+            weight=SimpleNamespace(
+                dtype=weight_dtype,
+                element_size=lambda: 1 if weight_dtype == "int8" else 2,
+            )
+        ),
         _wo_b_proj=object(),
+        wo_b=object(),
         rotary_emb=SimpleNamespace(cos_sin_cache=object()),
         n_local_groups=2,
         n_local_heads=num_heads,
@@ -480,6 +486,8 @@ def test_v41_projection_dispatches_by_quantization(
         "int8"
         if ppu and contract and weight_dtype == "int8"
         else "ppuv4"
+        if ppu and weight_dtype == "int8"
+        else "bf16"
         if ppu
         else "upstream"
     )
@@ -572,6 +580,8 @@ def test_v41_draft_loads_scales_from_actual_destinations(
     provider.get_tensor_model_parallel_rank = lambda: 1
     provider.default_weight_loader = lambda p, w: calls.append((p.name, w, (), {}))
     provider.logger = SimpleNamespace(info_once=lambda *args: None)
+    provider._duplicate_context_wkv_weights = lambda weights, count: weights
+    provider.extract_layer_index = lambda name: int(name.split(".")[2])
 
     def parameter(name):
         def load(param, weight, *args, **kw):
@@ -639,7 +649,14 @@ def test_v41_draft_loads_scales_from_actual_destinations(
         num_attention_heads=64,
     )
     model.model = SimpleNamespace(
-        layers=[SimpleNamespace(ffn=SimpleNamespace(use_mega_moe=mega))],
+        layers=[
+            SimpleNamespace(
+                ffn=SimpleNamespace(
+                    use_native_mega_moe=mega,
+                    experts=SimpleNamespace(has_fused_shared_experts=False),
+                )
+            )
+        ],
         confidence_head=object(),
     )
     model.linear_scale_name = "weight_scale_inv"
@@ -667,7 +684,7 @@ def test_v41_draft_loads_scales_from_actual_destinations(
     stream.insert(0, ("layers.0.attn.wq_a.scale", object()))
     assert model.load_weights(iter(stream)) == set(params)
     assert counts == [draft_experts or 384]
-    assert processed == [True]
+    assert processed == []  # The main loader defers processing to the model runner.
     assert model.model.confidence_head is None
     assert len(calls) == len(pairs)
     for call, (_, target, shard), weight in zip(calls, pairs, weights, strict=False):
@@ -705,7 +722,7 @@ def test_v41_draft_loader_keeps_upstream_body_except_scale_resolution(
     upstream_source_root,
 ):
     """Match the installed V4.1 loader after removing marked changes, without V4 context-KV."""
-    path = harness.ROOT / "vllm_sail/models/deepseek_v41/dspark.py"
+    path = ROOT / "vllm_sail/models/deepseek_v41/dspark.py"
     lines, inside = [], False
     for line in path.read_text().splitlines():
         if "PPU MODIFICATION: begin" in line:

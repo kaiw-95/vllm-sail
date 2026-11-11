@@ -396,9 +396,7 @@ def _lazy_init() -> None:
     _activation_mode_impl = getattr(_dg, "ActivationMode", None)
     _quant_mode_impl = getattr(_dg, "QuantMode", None)
     _activation_and_mul_impl = getattr(_dg, "activation_and_mul", None)
-    _activation_and_mul_masked_impl = getattr(
-        _dg, "activation_and_mul_masked", None
-    )
+    _activation_and_mul_masked_impl = getattr(_dg, "activation_and_mul_masked", None)
     DeepGemmQuantScaleFMT.init_oracle_cache()
 
 

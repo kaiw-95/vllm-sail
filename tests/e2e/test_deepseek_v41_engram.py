@@ -45,6 +45,8 @@ def test_channelwise_engram_lookup_preserves_fp32_scales(cpu_offload):
         dim=256,
         block_size=256,
         _num_sms=torch.cuda.get_device_properties(0).multi_processor_count,
+        _uses_small_host_pages=False,
+        peer_rows=0,
     )
     ParallelEngramEmbedding.lookup(owner, ids, out)
     torch.cuda.synchronize()

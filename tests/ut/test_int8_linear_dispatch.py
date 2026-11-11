@@ -193,7 +193,7 @@ def test_int8_initialization_uses_only_int8_registry(
     )
     selected_quantizations = []
 
-    def resolve(kernels, kind, *, quantization):
+    def resolve(kernels, kind, *, quantization, compute_capability=None):
         selected_quantizations.append(quantization)
         return kernels
 
@@ -223,6 +223,7 @@ def test_int8_initialization_uses_only_int8_registry(
         is_channelwise=channelwise,
         is_static_input_scheme=static_input,
         input_symmetric=True,
+        is_fused_module=False,
     )
     assert instance.layer_param_names == [
         "weight",

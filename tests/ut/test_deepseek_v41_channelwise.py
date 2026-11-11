@@ -5,7 +5,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.support.modules import load_patch
 from tests.support.source import function
 from vllm_sail.models.deepseek_v41.config import (
     checkpoint_layer_name,

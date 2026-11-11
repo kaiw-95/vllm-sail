@@ -6,8 +6,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.support.source import ROOT, definition
 from tests.support.modules import load_patch
+from tests.support.source import ROOT, definition
+
 PATH = "vllm_sail/patch/enhancement/attention/mhc_delayed.py"
 NAMES = ("mhc_pre_delayed_tilelang", "mhc_fused_post_pre_delayed_tilelang")
 
@@ -224,7 +225,10 @@ def test_delayed_consumer_inventory_matches_fixed_source(upstream_source_root):
                         assert alias.asname is None
                         found[alias.name].add(module)
     fixed = {
-        "mhc_pre_delayed_tilelang": {"vllm.models.deepseek_v41.nvidia.model"},
+        "mhc_pre_delayed_tilelang": {
+            "vllm.models.deepseek_v41.nvidia.model",
+            "vllm.models.deepseek_v41.nvidia.specialized_decode.boundary.boundary",
+        },
         "mhc_fused_post_pre_delayed_tilelang": {
             "vllm.models.deepseek_v41.nvidia.ops.mhc"
         },
