@@ -370,9 +370,10 @@ def test_int8_engram_shared_storage_layout_and_loader():
     )
 
     class Storage(Int8DPSharedEngramStorage):
-        def _allocate(self, num_bytes):
+        def _allocate_shm(self, num_bytes):
             self.requested_bytes = num_bytes
-            return torch.full((num_bytes,), 193, dtype=torch.uint8)
+            storage = torch.full((num_bytes,), 193, dtype=torch.uint8)
+            return storage, storage
 
     storage = Storage(3, 256, 32, types.SimpleNamespace())
     assert storage.requested_bytes == 3 * 260

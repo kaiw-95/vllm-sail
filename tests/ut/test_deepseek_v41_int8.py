@@ -50,6 +50,7 @@ def installed(monkeypatch, patch_utils_module):
         float32="fp32",
         uint8="uint8",
         int8="int8",
+        bfloat16="bf16",
         ops=types.SimpleNamespace(
             vllm=types.SimpleNamespace(
                 ppu_deepseek_v4_dequant_gather=operation("gather810")
@@ -138,7 +139,7 @@ def installed(monkeypatch, patch_utils_module):
         ),
     )
     module("vllm.config", get_current_vllm_config=lambda: config)
-    module(BASE + ".nvidia.engram", can_share_engram_tables=can_share)
+    module(BASE + ".common.engram", can_share_engram_tables=can_share)
     module(BASE + ".common.engram", Engram=Engram)
 
     module(
@@ -274,6 +275,24 @@ def test_non_ppu_delegation(installed, cap):
     assert state.selector._select_dsv4_attn_cls(state.config) is state.nvidia
     with pytest.raises(ValueError, match="output_buffers"):
         state.patch.fused_indexer_q_rope_quant(*range(6), output_buffers=(1, 2))
+
+
+@pytest.mark.parametrize("cap", [(8, 0), (8, 9)])
+@pytest.mark.parametrize("packed", [False, True])
+@pytest.mark.parametrize("peer_rows", [0, 8])
+def test_fp8_lookup_preserves_main_native_routes(installed, cap, packed, peer_rows):
+    state = installed
+    state.platform.capability = cap
+    embedding = types.SimpleNamespace(
+        weight=types.SimpleNamespace(dtype="fp8"), peer_rows=peer_rows
+    )
+    output = types.SimpleNamespace(dtype="uint8" if packed else "bf16")
+    expected = (
+        "lookup810"
+        if cap == (8, 0) and not packed and not peer_rows
+        else "lookup_upstream"
+    )
+    assert state.engram.lookup(embedding, object(), output) == expected
 
 
 @pytest.mark.parametrize("cap", [(8, 0), (8, 9), (9, 0)])
@@ -430,12 +449,12 @@ def test_engram_sharing_keeps_upstream_provider_and_consumer(
     assert not hasattr(state.engram, "can_share_engram_tables")
     assert not hasattr(state.engram, "_rebind_share_aliases")
     targets = {
-        BASE + ".nvidia.engram.can_share_engram_tables",
+        BASE + ".common.engram.can_share_engram_tables",
         BASE + ".nvidia.model.can_share_engram_tables",
     }
     assert targets.isdisjoint(record.target for record in state.utils.PATCH_REGISTRY)
     layout = object()
-    for consumer in ("nvidia.engram", "nvidia.model"):
+    for consumer in ("common.engram", "nvidia.model"):
         fn = state.modules[BASE + "." + consumer].can_share_engram_tables
         assert fn is state.original_share
         assert fn(layout, block_size=64) is available
@@ -466,7 +485,7 @@ def test_int8_engram_factory_and_non_quant_isolation(installed, cap, shared, use
     assert state.engram._create_embedding(None, layout, 1) == "embedding_upstream"
     state.sharing.available = False
     assert (
-        state.modules[BASE + ".nvidia.engram"].can_share_engram_tables(layout) is False
+        state.modules[BASE + ".common.engram"].can_share_engram_tables(layout) is False
     )
 
 

@@ -152,12 +152,23 @@ def test_int8_initialization_uses_only_int8_registry(
         self.config, self.layer_param_names = config, layer_param_names
 
     monkeypatch.setattr(Int8Kernel, "__init__", initialize)
-    Int8Kernel.is_supported = classmethod(function(
-        "vllm_sail/model_executor/kernels/linear/scaled_mm/ppu.py",
-        "PPUInt8ScaledMMLinearKernel.is_supported", environment))
+    Int8Kernel.is_supported = classmethod(
+        function(
+            "vllm_sail/model_executor/kernels/linear/scaled_mm/ppu.py",
+            "PPUInt8ScaledMMLinearKernel.is_supported",
+            environment,
+        )
+    )
     Int8Kernel.can_implement = classmethod(lambda cls, config: (True, None))
-    for name in ("PPUCutlassFP8ScaledMMLinearKernel", "PPUDeepGemmFP8ScaledMMLinearKernel", "PPUCutlassFp8BlockScaledMMKernel", "PPUDeepGemmFp8BlockScaledMMKernel"):
-        environment[name] = type(name, (), {"is_supported": classmethod(lambda *a: (True, None))})
+    for name in (
+        "PPUCutlassFP8ScaledMMLinearKernel",
+        "PPUDeepGemmFP8ScaledMMLinearKernel",
+        "PPUCutlassFp8BlockScaledMMKernel",
+        "PPUDeepGemmFp8BlockScaledMMKernel",
+    ):
+        environment[name] = type(
+            name, (), {"is_supported": classmethod(lambda *a: (True, None))}
+        )
     fp8_probes = []
     for name in (
         "PPUCutlassFP8ScaledMMLinearKernel",
