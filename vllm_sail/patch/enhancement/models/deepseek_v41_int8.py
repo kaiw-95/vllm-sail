@@ -96,7 +96,7 @@ def rope_quant_insert(latent, positions, cos_sin_cache, kv_cache, slot_mapping,
     reason=REASON, affected_versions=AFFECTED_VERSIONS, remove_when=REMOVE_WHEN,
 )
 def dequantize_and_gather_k_cache(out, k_cache, seq_lens, gather_lens, block_table,
-                                block_size, offset, use_fnuz=False):
+                                block_size, offset, use_fnuz=False, max_gather_len=None):
     if _uses_int8():
         if use_fnuz or k_cache.dtype != torch.uint8 or k_cache.shape[-1] != 584:
             raise ValueError("PPU V4.1 INT8 gather supports only the 584-byte OCP main cache")
@@ -117,7 +117,7 @@ def dequantize_and_gather_k_cache(out, k_cache, seq_lens, gather_lens, block_tab
         )
     # PPU MODIFICATION: end
     return _gather(out, k_cache, seq_lens, gather_lens, block_table, block_size,
-                   offset, use_fnuz=use_fnuz)
+                   offset, use_fnuz=use_fnuz, max_gather_len=max_gather_len)
 
 
 # Rebind only loaded V4.1 consumers; leave shared V4 providers untouched.

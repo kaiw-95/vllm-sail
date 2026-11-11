@@ -44,7 +44,7 @@ class DSparkDeepseekV41ForCausalLM(UpstreamDSparkV41, SupportsQuant):
 
 
 # Preserve V4.1 draft expert counts, name mapping and TP slicing without the V4 loader.
-# This function retains the upstream vLLM 0.31 body and globals.
+# This function retains the pinned upstream vLLM body and globals.
 # ruff: noqa: F821
 def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
     """Load the ``mtp.{0,1,2}.*`` draft weights from the target checkpoint.
@@ -53,7 +53,7 @@ def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
     are skipped here. ``embed_tokens``/``lm_head`` are aliased from the target.
     """
     first_layer = self.model.layers[0]
-    use_mega_moe = first_layer.ffn.use_mega_moe
+    use_native_mega_moe = first_layer.ffn.use_native_mega_moe
     # Draft MoE layers use the dspark_* expert counts, not the
     # backbone's (see DeepseekV4MoE and the reference
     # ModelArgs.get_moe_config).
@@ -61,7 +61,7 @@ def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
         getattr(self.config, "dspark_n_routed_experts", 0)
         or self.config.n_routed_experts
     )
-    if use_mega_moe:
+    if use_native_mega_moe:
         expert_mapping = make_deepseek_v4_expert_params_mapping(n_draft_experts)
     else:
         expert_mapping = fused_moe_make_expert_params_mapping(
@@ -89,12 +89,7 @@ def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
     loaded_params: set[str] = set()
     loaded_confidence_head = False
 
-    tp_size = get_tensor_model_parallel_world_size()
-    tp_rank = get_tensor_model_parallel_rank()
-    n_local_head = self.config.num_attention_heads // tp_size
-    head_start = n_local_head * tp_rank
-    head_end = n_local_head * (tp_rank + 1)
-
+    weights = _duplicate_context_wkv_weights(weights, len(self.model.layers))
     for name, loaded_weight in weights:
         mapped = self._remap_dspark_name(name)
         if mapped is None:
@@ -111,12 +106,28 @@ def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
                 else f".{self.linear_scale_name}"
             )
             name = name.removesuffix(".scale") + suffix
+        if ".shared_experts." in name:
+            experts = self.model.layers[extract_layer_index(name)].ffn.experts
+            if getattr(experts, "has_fused_shared_experts", False):
+                loaded_params.add(
+                    experts.load_shared_expert_weight(name, loaded_weight)
+                )
+                continue
         if ".shared_experts.w2" in name:
             name = name.replace(".shared_experts.w2", ".shared_experts.down_proj")
         if self.pad_shared_expert and ".shared_experts." in name:
             loaded_weight = DeepseekV4Model._pad_shared_expert_weight(
                 self.quant_config, name, loaded_weight
             )
+
+        # PPU MODIFICATION: begin
+        name = self._resolve_scale_name(name, params_dict)
+        # PPU MODIFICATION: end
+        if name.startswith("model.context_wkv_proj."):
+            param = params_dict[name]
+            param.weight_loader(param, loaded_weight, loaded_weight.shard_id)
+            loaded_params.add(name)
+            continue
 
         # E8M0 expert scales: keep raw exponent bytes.
         if ".experts." in name:
@@ -127,7 +138,6 @@ def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
                     continue
                 name_mapped = name.replace(weight_name, param_name)
                 # PPU MODIFICATION: begin
-                # INT8 fused MoE registers weight_scale; resolve the mapped destination.
                 name_mapped = self._resolve_scale_name(name_mapped, params_dict)
                 # PPU MODIFICATION: end
                 param = params_dict[name_mapped]
@@ -153,7 +163,6 @@ def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
                 continue
             name = name.replace(weight_name, param_name)
             # PPU MODIFICATION: begin
-            # The quantization method registers fused attention/shared-expert scales.
             name = self._resolve_scale_name(name, params_dict)
             # PPU MODIFICATION: end
             param = params_dict[name]
@@ -161,17 +170,11 @@ def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
             loaded_params.add(name)
             break
         else:
-            if "attn_sink" in name:
-                narrow = loaded_weight[head_start:head_end]
-                params_dict[name][: narrow.shape[0]].copy_(narrow)
-                loaded_params.add(name)
-                continue
             if name.endswith(".ffn.gate.bias"):
                 name = name.replace(
                     ".ffn.gate.bias", ".ffn.gate.e_score_correction_bias"
                 )
             # PPU MODIFICATION: begin
-            # Standalone layers include main_proj, attention and shared-expert down_proj.
             name = self._resolve_scale_name(name, params_dict)
             # PPU MODIFICATION: end
             param = params_dict[name]
@@ -181,7 +184,6 @@ def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
 
     if self.model.confidence_head is not None and not loaded_confidence_head:
         self.model.confidence_head = None
-    self.process_weights_after_loading()
     logger.info_once("DSpark draft model loaded: %d params", len(loaded_params))
     return loaded_params
 

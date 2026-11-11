@@ -3,11 +3,11 @@
 
 import torch
 from vllm.distributed import get_engram_dp_group
-from vllm.models.deepseek_v41.common.engram import _engram_head_shard_weight_loader
 from vllm.models.deepseek_v41.common.engram import (
     DPSharedEngramStorage,
     ParallelEngramEmbedding,
     _allocate_huge_page_storage,
+    _engram_head_shard_weight_loader,
 )
 
 

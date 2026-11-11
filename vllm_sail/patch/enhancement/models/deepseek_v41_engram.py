@@ -172,9 +172,11 @@ def lookup(self, indices, out, background=False):
     if current_platform.is_ppu():
         # INT8 tables exist only when the construction-time W8A8 factory chose
         # ChannelwiseEngramEmbedding(weight_dtype=int8); no runtime config query.
-        if (
+        if getattr(self, "weight_dtype", None) == torch.int8 or (
             self.weight.dtype != torch.int8
-            or getattr(self, "weight_dtype", None) == torch.int8
+            and current_platform.is_device_capability((8, 0))
+            and not getattr(self, "peer_rows", 0)
+            and out.dtype == torch.bfloat16
         ):
             from vllm_sail.models.deepseek_v41.ops.engram_lookup import lookup as ppu_lookup
 

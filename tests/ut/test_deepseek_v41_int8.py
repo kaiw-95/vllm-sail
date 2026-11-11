@@ -334,7 +334,9 @@ def test_fp8_main_cache_decoding_does_not_enable_int8(
         "gather810" if selected else "gather_upstream"
     )
     assert state.calls[-1][1] == args
-    assert state.calls[-1][2] == ({} if selected else dict(use_fnuz=use_fnuz))
+    assert state.calls[-1][2] == (
+        {} if selected else dict(use_fnuz=use_fnuz, max_gather_len=None)
+    )
     assert state.patch.fused_indexer_q_rope_quant(*range(6)) == "q_upstream"
     assert state.patch.indexer_k_norm_rope_store(*range(8), False) == "k_upstream"
 
@@ -630,10 +632,16 @@ def test_real_indexer_spec_and_kernel_selection(
     backend = state.modules[
         "vllm.v1.attention.backends.mla.indexer"
     ].DeepseekV41IndexerBackend
+    scope = {"MultipleOf": type("MultipleOf", (), {})}
+    scope["_block_size_is_supported"] = function(
+        upstream_source_root / "vllm/v1/worker/utils.py",
+        "_block_size_is_supported",
+        scope,
+    )
     select = function(
         upstream_source_root / "vllm/v1/worker/utils.py",
         "select_common_block_size",
-        {"MultipleOf": type("MultipleOf", (), {})},
+        scope,
     )
     selected = select(spec.block_size, [backend])
     if ppu:
@@ -739,7 +747,8 @@ def sparse_indexer(installed):
 
     state = installed
     state.config.parallel_config = types.SimpleNamespace(
-        decode_context_parallel_size=1, prefill_context_parallel_size=1,
+        decode_context_parallel_size=1,
+        prefill_context_parallel_size=1,
         pcp_shard_decode_requests=False,
     )
     state.config.kernel_config = types.SimpleNamespace(

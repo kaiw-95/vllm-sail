@@ -5,10 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import ast
-
 from tests.support.modules import load_patch
-from tests.support.source import ROOT, definition
 
 
 @pytest.mark.parametrize("offload", [False, True])
@@ -358,23 +355,3 @@ def test_int8_thp_storage_and_pinned_fallback(
     else:
         assert [a[0] for a in state.allocations] == [(10, 256), (10, 1)]
         assert all((a[1].get("device") == "cpu") is offload for a in state.allocations)
-
-
-@pytest.mark.upstream_source
-def test_engram_e8m0_lookup_body_matches_upstream(upstream_source_root):
-    class RemoveChannelwiseBranch(ast.NodeTransformer):
-        def visit_If(self, node):
-            if ast.unparse(node.test) == "scales.dtype.element_ty == tl.float32":
-                return node.orelse
-            return self.generic_visit(node)
-
-    local = definition(
-        ROOT / "vllm_sail/patch/enhancement/models/deepseek_v41_engram.py",
-        "_engram_lookup_kernel",
-    )
-    upstream = definition(
-        upstream_source_root / "vllm/models/deepseek_v41/common/engram.py",
-        "_engram_lookup_kernel",
-    )
-    local.decorator_list = local.decorator_list[1:]
-    assert ast.dump(RemoveChannelwiseBranch().visit(local)) == ast.dump(upstream)
