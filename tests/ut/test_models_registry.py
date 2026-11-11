@@ -64,6 +64,7 @@ EXPECTED_ARCHITECTURES = {
     "DSparkDraftModel",
     "DSparkV41DraftModel",
     "GlmMoeDsaForCausalLM",
+    "Glm5NextMTPModel",
     "DeepseekV32MTPModel",
     "MiniMaxM3SparseForCausalLM",
     "MiniMaxM3SparseForConditionalGeneration",
@@ -143,6 +144,9 @@ def test_register_model_registers_expected_architectures(
     assert (
         registered["DSparkV41DraftModel"]
         == "vllm_sail.models.deepseek_v41.dspark:DSparkDeepseekV41ForCausalLM"
+    )
+    assert (
+        registered["Glm5NextMTPModel"] == "vllm_sail.models.glm5_next.mtp:Glm5NextMTP"
     )
 
 

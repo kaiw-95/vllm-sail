@@ -20,6 +20,8 @@ Registered architectures (cross-checked against the PPU fork):
   V4.1 draft execution and loading with the same quantization mapping contract.
 * ``GlmMoeDsaForCausalLM`` / ``DeepseekV32MTPModel`` -> legacy upstream models
   retaining PPU INT8 indexer and checkpoint-loader patches.
+* ``Glm5NextMTPModel`` -> ``vllm_sail.models.glm5_next.mtp`` — the upstream
+  draft with a mapper for its text-only quantization layer names.
 * ``MiniMaxM3SparseForCausalLM`` / ``MiniMaxM3SparseForConditionalGeneration``
   -> ``vllm_sail.models.minimax_m3`` — upstream classes plus the
   ``SupportsQuant`` interface the fork adds (its only minimax_m3 change).
@@ -64,6 +66,7 @@ _REQUIRED_PPU_MODELS: dict[str, str] = {
 
 #: Optional overrides may fail independently without disabling DeepSeek V4.
 _OPTIONAL_PPU_MODELS: dict[str, str] = {
+    "Glm5NextMTPModel": "vllm_sail.models.glm5_next.mtp:Glm5NextMTP",
     "MiniMaxM3SparseForCausalLM": (
         "vllm_sail.models.minimax_m3:MiniMaxM3SparseForCausalLM"
     ),
