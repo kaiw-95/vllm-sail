@@ -44,6 +44,34 @@ quoting prevents the shell from interpreting the semicolon as a command boundary
 
 ## 2. Install matching vLLM
 
+### Download nightly or branch wheels
+
+The [Nightly wheels workflow](https://github.com/vllm-project/vllm-sail/actions/workflows/nightly-wheels.yaml)
+builds `main` daily at 21:00 Asia/Shanghai (13:00 UTC). It reuses the existing
+PPU wheel build workflow to compile vllm-sail and that source checkout's pinned
+vLLM, with both `ppu_10` and `ppu_15` targets. Device tests run separately.
+
+To build another branch, select **Actions → Nightly wheels → Run workflow**,
+keep **Use workflow from** on `main`, and enter the source `branch`. For example:
+
+```bash
+gh workflow run nightly-wheels.yaml --repo vllm-project/vllm-sail \
+  --ref main -f branch=feature/my-change
+```
+
+The source branch is resolved to a fixed commit before building. Open the run's
+**Wheel download directory** job summary for the temporary download URL and
+the selected branch and commit. Both wheels and `wheel-manifest.json` are also
+in the `ppu-wheels-<run-id>` Actions artifact, retained for 14 days. If publishing
+fails, retry the failed job or download that artifact. Wheels retain their
+source-derived versions; see step 4 and
+[device verification](../user_guide/verification_guide.md) for runtime checks.
+
+Maintainers must configure `RELEASE_USERNAME` and `RELEASE_TOKEN` Actions secrets
+for the temporary publisher, plus `TEMPLATE_TOKEN` if template checkout needs it.
+This entry point runs only from `main` in `vllm-project/vllm-sail`; the source
+branch can be another branch in the same repository.
+
 ### Build both wheels
 
 In the activated SAIL SDK / SAIL PyTorch environment, run from the vLLM SAIL
