@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """Provide quantization mapping and destination-aware scale loading for V4.1 DSpark."""
 
 from __future__ import annotations
@@ -44,7 +45,8 @@ class DSparkDeepseekV41ForCausalLM(UpstreamDSparkV41, SupportsQuant):
 
 
 # Preserve V4.1 draft expert counts, name mapping and TP slicing without the V4 loader.
-# This function retains the pinned upstream vLLM body and globals.
+# Based on vLLM 8b10bda57ceab3a741d2fb3718af48cef691023e:
+# vllm/models/deepseek_v41/nvidia/dspark.py. Retain its body and globals.
 # ruff: noqa: F821
 def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
     """Load the ``mtp.{0,1,2}.*`` draft weights from the target checkpoint.

@@ -16,6 +16,47 @@ BASE = "vllm.models.deepseek_v41"
 PLUGIN = "vllm_sail.models.deepseek_v41"
 
 
+@pytest.mark.upstream_source
+def test_operator_alias_inventory_matches_main(installed, upstream_source_root):
+    state = installed
+    aliases = {
+        name: (original, replacement)
+        for name, original, replacement in state.patch._ALIASES
+    }
+    found = {name: set() for name in aliases}
+    for path in (upstream_source_root / "vllm/models/deepseek_v41").rglob("*.py"):
+        module = ".".join(path.relative_to(upstream_source_root).with_suffix("").parts)
+        module = module.removesuffix(".__init__")
+        for node in ast.walk(ast.parse(path.read_text())):
+            if isinstance(node, ast.ImportFrom):
+                for alias in node.names:
+                    if alias.name in found:
+                        assert alias.asname is None
+                        found[alias.name].add(module)
+    assert found == {
+        "fused_indexer_q_rope_quant": {
+            BASE + ".attention",
+            BASE + ".common.ops",
+            BASE + ".nvidia.specialized_decode.attention.indexer",
+        },
+        "indexer_k_norm_rope_store": {BASE + ".attention", BASE + ".common.ops"},
+        "rope_quant_insert": {BASE + ".compressor"},
+        "dequantize_and_gather_k_cache": {
+            BASE + ".amd.rocm",
+            BASE + ".common.ops",
+            BASE + ".nvidia.flash_mla_mega_attn",
+            BASE + ".nvidia.flashmla",
+        },
+    }
+    for name, consumers in found.items():
+        for consumer in consumers:
+            state.module(consumer, **{name: aliases[name][0]})
+    state.patch._rebind_aliases()
+    for name, consumers in found.items():
+        for consumer in consumers:
+            assert getattr(state.modules[consumer], name) is aliases[name][1]
+
+
 @pytest.fixture
 def installed(monkeypatch, patch_utils_module):
     modules = {}
