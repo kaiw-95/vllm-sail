@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts/ci/ppu_runtime_container.sh"
 
@@ -46,12 +48,12 @@ def test_runtime_wrapper_mounts_inputs_read_only_and_artifacts_writable():
     assert "/source/scripts/ci/ppu_e2e_smoke.sh" in text
 
 
-def test_runtime_wrapper_keeps_dynamic_module_cache_writable():
+@pytest.mark.parametrize("branch", ["upstream-reuse", "model-test", "model-accuracy"])
+def test_runtime_wrapper_keeps_dynamic_module_cache_writable(branch):
     text = SCRIPT.read_text()
-    # HF_HOME is mounted read-only, so transformers cannot materialise remote
-    # model code underneath it; both device lanes have to redirect the cache.
     assert "hf_modules_cache=/tmp/hf-modules" in text
-    assert text.count('--env HF_MODULES_CACHE="${hf_modules_cache}"') == 2
+    branch_body = text.split(f"\n    {branch})\n", 1)[1].split("\n        ;;", 1)[0]
+    assert '--env HF_MODULES_CACHE="${hf_modules_cache}"' in branch_body
 
 
 def test_runtime_wrapper_keeps_deep_gemm_cache_outside_the_container():
