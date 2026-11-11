@@ -27,7 +27,7 @@ def modules(monkeypatch):
         lambda _: types.SimpleNamespace(multi_processor_count=24),
     )
     from vllm.models.deepseek_v41.common import engram as common
-    from vllm.models.deepseek_v41.nvidia import engram as upstream
+    from vllm.models.deepseek_v41.common import engram as upstream
 
     from vllm_sail.models.deepseek_v41 import engram as plugin
 
@@ -39,9 +39,10 @@ def test_packed_storage_and_exact_head_loader(modules):
     plugin = modules[2]
 
     class Storage(plugin.Int8DPSharedEngramStorage):
-        def _allocate(self, num_bytes):
+        def _allocate_shm(self, num_bytes):
             self.requested_bytes = num_bytes
-            return torch.full((num_bytes,), 193, dtype=torch.uint8)
+            storage = torch.full((num_bytes,), 193, dtype=torch.uint8)
+            return storage, storage
 
     storage = Storage(3, 256, 32, types.SimpleNamespace())
     assert storage.requested_bytes == 3 * 260
@@ -105,8 +106,8 @@ def test_real_constructor_attributes_and_tp_ownership(
     # Mock only allocation; execute the parent/child constructors and set_weight_attrs.
     monkeypatch.setattr(
         plugin.Int8DPSharedEngramStorage,
-        "_allocate",
-        lambda _, size: torch.empty(size, dtype=torch.uint8),
+        "_allocate_shm",
+        lambda _, size: (torch.empty(size, dtype=torch.uint8),) * 2,
     )
     monkeypatch.setattr(
         plugin,
