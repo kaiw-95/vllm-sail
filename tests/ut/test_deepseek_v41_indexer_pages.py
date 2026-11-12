@@ -22,6 +22,7 @@ def test_indexer_publishes_geometry_and_physical_pages(
         block_size: int = 256
         tokens_per_state: int = ratio
         page_size_padded: int | None = 33792
+        block_stride_alignment: int | None = 256
         indexer_n_head: int | None = None
         indexer_q_head_dim: int | None = None
 
@@ -57,6 +58,7 @@ def test_indexer_publishes_geometry_and_physical_pages(
     load_patch("vllm_sail/patch/enhancement/models/deepseek_v41_indexer.py")
     cache = Cache()
     cache.compress_ratio = ratio
+    cache.sparse_logits = sparse
     indexer = Indexer(cache)
     assert indexer.indexer_weights_dtype == (
         "sparse-dtype" if sparse else "bf16" if ppu and fp4 else "fp32"
@@ -65,6 +67,7 @@ def test_indexer_publishes_geometry_and_physical_pages(
     if ppu:
         assert spec.block_size == 64 * ratio
         assert spec.page_size_padded is None
+        assert spec.block_stride_alignment == (512 if sparse else 256)
         assert (spec.indexer_n_head, spec.indexer_q_head_dim) == (32, 128)
         assert Backend.get_supported_kernel_block_sizes(spec) == [64, 128]
     else:

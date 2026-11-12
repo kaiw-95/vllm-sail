@@ -14,6 +14,8 @@ tokenspeed-mla==0.1.2
 transformers>=5.16.1,<5.20.0
 # SAIL DeepGEMM wheel from the PPU package index.
 deep_gemm==1.1.0+v1.1.0.ppu2.2.0
+# SAIL DeepSelect wheel from the PPU package index.
+deep_select==1.0.0
 
 # PPU SDK dependencies — supplied by the SDK and NOT installable from PyPI.
 # Their availability is checked at runtime: acext, flash_attn, flash_attn_3.

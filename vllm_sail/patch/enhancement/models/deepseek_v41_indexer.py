@@ -2,6 +2,7 @@
 """Give each V4.1 indexer cache the physical page size required by SAIL."""
 
 from dataclasses import replace
+from math import lcm
 
 from vllm.models.deepseek_v41 import attention
 from vllm.platforms import current_platform
@@ -42,7 +43,8 @@ def indexer_init(self, *args, **kwargs):
     reason=(
         "SAIL paged indexer logits require 64 stored rows per page. V4.1 C1 and "
         "C2 indexers therefore need independent 64- and 128-token cache blocks; "
-        "splitting the main cache's shared padded pages cannot express this."
+        "splitting the main cache's shared padded pages cannot express this. "
+        "Sparse logits additionally require 512-byte-aligned page strides."
     ),
     affected_versions=_AFFECTED,
     remove_when="V4.1 indexer cache sizing delegates to a platform-specific kernel contract.",
@@ -57,6 +59,11 @@ def get_kv_cache_spec(self, vllm_config):
             spec,
             block_size=64 * self.compress_ratio,
             page_size_padded=None,
+            block_stride_alignment=(
+                lcm(spec.block_stride_alignment or 1, 512)
+                if self.sparse_logits
+                else spec.block_stride_alignment
+            ),
             indexer_n_head=getattr(self, "n_head", None),
             indexer_q_head_dim=getattr(self, "q_head_dim", None),
         )

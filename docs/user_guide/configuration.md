@@ -126,10 +126,25 @@ rules do not enable MegaMoE for GLM's ordinary FusedMoE path.
 The v0.33 integration retains upstream's `SparseAttnIndexer` for dense
 scoring, including candidate masking. V4/V4.1 query producers use the selected
 operator's `weights_dtype` contract. The separate candidate-only
-`SparseMQAIndexer` path (`attention_config.indexer_sparse_logits`) retains
-upstream's capability checks and is not enabled on PPU. Prefill chunking
-also retains upstream's memory budget: it is conservative for dense BF16
-logits and preserves the sparse backend's own BF16 budget calculation.
+`SparseMQAIndexer` path can be enabled for DeepSeek V4.1 on M890 with
+`--attention-config '{"indexer_sparse_logits":true,"indexer_kv_dtype":"mxfp4"}'`.
+It requires the SAIL DeepGEMM sparse APIs, the `deep_select==1.0.0` wheel,
+`VLLM_SAIL_USE_DEEPSELECT=1` (default), and top-k backend `auto` or
+`deep_select`. The candidate-source layer still uses dense scoring; later
+indexers score only its candidate blocks and return request-local token indices.
+
+This path requires 32 indexer heads, head dimension 128, candidate blocks of
+8/16/32 positions, and a power-of-two candidate count yielding 4–4096 sparse
+blocks divisible by four. Top-k must fit the candidate width and be at most
+4096; upstream DeepSelect row-alignment constraints still apply. Context
+parallelism and non-MXFP4 indexer caches are rejected. Missing or disabled
+dependencies fail at startup instead of silently selecting dense scoring.
+Keep the option disabled to use the dense indexer. PPU inference correctness
+and performance for the candidate-only path still require device validation.
+
+Prefill chunking retains upstream's chunker and BF16 budget conversion for the
+sparse backend. The PPU sparse builder includes SAIL's physical row padding in
+that budget; the dense path keeps the conservative upstream FP32 budget.
 
 ## Compatibility controls
 

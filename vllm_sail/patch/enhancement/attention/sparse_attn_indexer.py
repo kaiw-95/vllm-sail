@@ -243,4 +243,7 @@ def sparse_attn_indexer_forward_ppu(
         self.candidate_blocks,
         self.candidate_block_size,
         self.candidate_write,
+        # PPU MODIFICATION: begin
+        self.topk_backend,
+        # PPU MODIFICATION: end
     )

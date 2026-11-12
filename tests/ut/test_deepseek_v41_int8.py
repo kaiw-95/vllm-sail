@@ -121,9 +121,11 @@ def installed(monkeypatch, patch_utils_module):
         tokens_per_state: int = 2
         block_size: int = 256
         page_size_padded: int | None = 17280
+        block_stride_alignment: int | None = None
 
     class Cache:
         compress_ratio = 2
+        sparse_logits = False
         n_head = 64
         q_head_dim = 128
 
@@ -1097,6 +1099,7 @@ def test_indexer_wrapper_forwards_inputs_to_custom_op(
             candidates,
             8,
             candidate_write,
+            indexer.topk_backend,
         )
     ]
 
