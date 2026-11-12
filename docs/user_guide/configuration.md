@@ -103,9 +103,12 @@ the selected kernel and its weight transform, where applicable.
 | W4A16 | `bf16xmxfp4` | SiTU | Hidden divisible by 256. Intermediate divisible by 128. |
 
 DeepSeek V4/V4.1 uses SwiGLU and can select W4A4 or W4A8. Kimi K3's native
-latent MoE uses SiTU and requires an eligible MXFP4 checkpoint. W4A8 requires
-EPLB to be disabled because rebalancing can change the inverse weight scale
-captured by the kernel. Restart the server to replace checkpoint weights
+latent MoE uses SiTU and requires an eligible MXFP4 checkpoint. The platform
+gate checks hardware and DeepGEMM APIs without a model-name allow-list;
+expert construction checks the actual geometry and activation. Models without
+`moe_intermediate_size` defer the shape check to expert construction. EPLB is
+accepted; transformed weight banks are refreshed each step when EPLB is active.
+Restart the server to replace checkpoint weights
 with W4A8 or W4A16, whose transformed banks are bound by CUDA graphs. Shared
 experts run as a separate MLP.
 
