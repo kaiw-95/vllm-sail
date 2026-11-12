@@ -69,6 +69,8 @@ def test_prefill_passes_window_bound_and_masks_relative_columns(policy):
         "fp8_mqa_logits": logits_api,
         "sail_ops": NS(top_k_per_row_prefill_bf16=topk),
         "_filter_candidates": filter_candidates,
+        "_use_deep_select": lambda *args: False,
+        "warn_deep_select_fallback": lambda: None,
     }
     namespace["_gather_workspace_shapes"] = function(
         INDEXER, "_gather_workspace_shapes", {"torch": torch, "MXFP4_BLOCK_SIZE": 32}

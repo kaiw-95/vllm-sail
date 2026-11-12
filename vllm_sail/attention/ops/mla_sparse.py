@@ -374,9 +374,8 @@ def ppu_sparse_attn_indexer(
             ]
 
             if _use_deep_select(logits, topk_tokens, topk_backend):
-                # BF16 weighted logits are already query-relative; other
-                # prefill formats retain their existing packed-row kernels.
-                assert use_fp4_cache
+                # Compressed rows start at each query's first K position;
+                # BF16 scores use the wheel with per-row valid lengths.
                 deep_select_topk(logits, topk_tokens, row_ends, topk_indices)
             elif logits.dtype == torch.bfloat16:
                 warn_deep_select_fallback()
