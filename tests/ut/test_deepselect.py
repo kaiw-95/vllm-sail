@@ -77,9 +77,29 @@ def test_deepselect_pads_input_and_preserves_k_and_strided_output():
     fn(logits, 3, torch.tensor([13, 1, 0], dtype=torch.int32), out)
     assert calls[0][0] == (512, 1)
     assert calls[0][1] == 3 and calls[0][2]["output_idx"] is None
+    assert calls[0][2]["abort_when_nan_found"] is False
     assert set(out[0].tolist()) == {10, 11, 12}
     assert out[1].tolist() == [0, -1, -1]
     assert out[2].tolist() == [-1, -1, -1]
+
+
+def test_deepselect_can_allocate_int64_indices_without_row_ends():
+    torch = pytest.importorskip("torch")
+    expected = torch.tensor([[1, 0]], dtype=torch.int64)
+    calls = []
+
+    def topk(scores, k, **kwargs):
+        calls.append(kwargs)
+        return None, expected
+
+    wheel = NS(topk=topk, get_stride_requirement=lambda: (16, 32))
+    fn = function(DEEP_SELECT, "deep_select_topk", {
+        "torch": torch, "_wheel": lambda: wheel,
+        "can_use_deep_select": lambda *args: True,
+    })
+    assert fn(torch.zeros((1, 8), dtype=torch.bfloat16), 2, indices_dtype=torch.int64) is expected
+    assert calls[0]["indices_type"] == torch.int64
+    assert calls[0]["end"] is None
 
 
 @pytest.mark.parametrize("backend,available,expected", [

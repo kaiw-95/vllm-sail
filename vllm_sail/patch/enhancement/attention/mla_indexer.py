@@ -21,10 +21,11 @@ helpers, new parameters, refactors) cannot break this plugin.
   from the builder's fp4 capability (PPU-only delta: both upstreams budget
   a fixed 4 bytes/elem), so the fp4 indexer (bf16 logits) chunks against
   the correct logits budget.
+* PPU SM89 uses upstream's device-built varlen query rows and request IDs.
+  The SAIL adapter passes those expanded rows to its next_n=1 logits API.
+  Flattened device query lengths remain supported on legacy PPU too.
 * ``DeepseekV32IndexerMetadataBuilder.__init__`` delegates to upstream, then
-  adds the fork's PPU-only state: pins ``supports_varlen`` off (PPU declares
-  ``PlatformEnum.CUDA``, so the fork's fixed-length paged-logits metadata
-  layout must not be bypassed), ``indexer_n_head``/``indexer_q_head_dim``
+  adds the fork's PPU-only state: ``indexer_n_head``/``indexer_q_head_dim``
   from the KV-cache spec, the SM count from PPU DeepGEMM, and the enlarged
   fp4 scheduler-metadata buffer.
 * ``DeepseekV32IndexerMetadataBuilder.build`` delegates to upstream, keeping
@@ -182,6 +183,32 @@ patch(
 )(_ppu_paged_metadata)
 
 
+_upstream_supports_varlen_paged_mqa_logits = (
+    _indexer_module._supports_varlen_paged_mqa_logits
+)
+
+
+@patch(
+    _MODULE,
+    "_supports_varlen_paged_mqa_logits",
+    reason=(
+        "SAIL SM89 accepts device-built varlen query rows and request IDs "
+        "through the PPU next_n=1 paged-logits adapter, without an SM100 gate."
+    ),
+    affected_versions=_AFFECTED,
+    remove_when="The indexer delegates varlen query-row support to the platform.",
+)
+def _supports_varlen_paged_mqa_logits() -> bool:
+    from vllm.platforms import current_platform
+
+    if current_platform.is_ppu():
+        return (
+            current_platform.is_device_capability(89)
+            and _ppu_deep_gemm.is_deep_gemm_supported()
+        )
+    return _upstream_supports_varlen_paged_mqa_logits()
+
+
 _upstream_supports_flattened_device_query_lens = (
     _indexer_module._supports_flattened_device_query_lens
 )
@@ -191,7 +218,8 @@ def _supports_flattened_device_query_lens() -> bool:
     from vllm.platforms import current_platform
 
     if current_platform.is_ppu():
-        # SAIL fixed-length paged logits consumes one expanded query per row.
+        # SAIL consumes one expanded query per row, including on SM89.
+        # Preserve legacy PPU flattened-query support as well.
         return _ppu_deep_gemm.is_deep_gemm_supported()
     return _upstream_supports_flattened_device_query_lens()
 
@@ -348,10 +376,6 @@ def _builder_init_wrapper(self, *args, **kwargs) -> None:
 
     if not current_platform.is_ppu():
         return
-    # PPU declares PlatformEnum.CUDA, so upstream's varlen probe would pass
-    # its is_cuda() gate and only fail on the capability check. Pin it off:
-    # SAIL's paged logits API uses the existing fixed-length metadata layout.
-    self.supports_varlen = False
     hf_config = self.vllm_config.model_config.hf_config
     self.indexer_n_head = getattr(self.kv_cache_spec, "indexer_n_head", 0) or getattr(
         hf_config, "index_n_heads", 0
@@ -376,9 +400,7 @@ patch(
     _MODULE,
     "DeepseekV32IndexerMetadataBuilder.__init__",
     reason=(
-        "PPU-only builder state from the fork: pin supports_varlen off (PPU "
-        "declares PlatformEnum.CUDA, so the upstream varlen probe passes its "
-        "is_cuda() gate), indexer_n_head/indexer_q_head_dim "
+        "PPU-only builder state from the fork: indexer_n_head/indexer_q_head_dim "
         "read from the KV-cache spec, SM count from PPU DeepGEMM's get_num_sms, "
         "and the enlarged num_sms * PPU_DEEP_GEMM_TB_PER_CU scheduler-metadata "
         "buffer for fp4 paged logits. Delegates to the upstream __init__ so "

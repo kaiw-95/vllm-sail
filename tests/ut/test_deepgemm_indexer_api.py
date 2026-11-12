@@ -95,3 +95,18 @@ def test_upstream_flattened_mtp_recovers_true_request_ownership():
         torch.tensor([3, 1, 2], dtype=torch.int32),
     )
     assert ids.tolist() == [0, 0, 0, 1, 2, 2]
+
+
+def test_varlen_device_rows_preserve_explicit_request_ids_and_padding():
+    torch = pytest.importorskip("torch")
+    fn = function(INDEXER, "_paged_decode_rows", {"torch": torch})
+    contexts = torch.tensor([[8], [9], [10], [7], [9], [10], [0]], dtype=torch.int32)
+    tables = torch.arange(14, dtype=torch.int32).reshape(7, 2)
+    request_ids = torch.tensor([0, 0, 0, 1, 2, 2, 3], dtype=torch.int32)
+    lens, expanded_tables, ids = fn(
+        contexts, tables, torch.ones(7, dtype=torch.int32), 1, request_ids,
+        torch.tensor([3, 1, 2], dtype=torch.int32),
+    )
+    assert torch.equal(lens, contexts)
+    assert torch.equal(expanded_tables, tables)
+    assert torch.equal(ids, request_ids)
