@@ -426,6 +426,9 @@ def test_megamoe_api_reports_all_missing_functions(
         ("bf16xmxfp4", 2304, 128, True),
         ("bf16xmxfp4", 2048, 0, False),
         ("bf16xmxfp4", 0, 128, False),
+        ("mxf4xmxf4", 1, None, True),
+        ("fp8xmxfp4", 1, None, True),
+        ("bf16xmxfp4", 1, None, True),
     ],
 )
 def test_megamoe_geometry_matches_wheel_contract(
@@ -450,6 +453,87 @@ def test_megamoe_geometry_matches_wheel_contract(
         with pytest.raises(ValueError):
             module.check_mega_moe_supported(device, hidden, intermediate, mode)
         assert not calls
+
+
+@pytest.mark.parametrize("missing", ["ppu", "m890", "deep_gemm", "api"])
+def test_megamoe_unknown_geometry_still_checks_hardware_and_api(modules, missing):
+    modules(
+        "vllm.platforms",
+        current_platform=SimpleNamespace(
+            is_ppu=lambda: missing != "ppu",
+            has_device_capability=lambda *args, **kwargs: missing != "m890",
+        ),
+    )
+    modules(
+        "vllm_sail.utils.deep_gemm",
+        is_deep_gemm_supported=lambda: missing != "deep_gemm",
+    )
+    modules("deep_gemm.mega")
+    module = load_patch(_MEGAMOE_API)
+    error = RuntimeError if missing == "api" else NotImplementedError
+    match = "API is missing" if missing == "api" else "requires Zhenwu M890"
+    with pytest.raises(error, match=match):
+        module.check_mega_moe_supported(SimpleNamespace(index=0), 1, None, "fp8xmxfp4")
+
+
+@pytest.fixture
+def megamoe_platform_gate(modules):
+    calls = []
+    modules("vllm_sail.ops")
+    modules(
+        "vllm_sail.models.deepseek_v41.config",
+        normalize_expert_dtype=lambda config: None,
+    )
+    envs = modules("vllm_sail.envs", VLLM_SAIL_MEGA_MOE_MMA_TYPE="fp8xmxfp4")
+    modules(
+        "vllm_sail.utils.deep_gemm_mega",
+        check_mega_moe_supported=lambda *args: calls.append(args),
+    )
+    modules(
+        "torch",
+        device=lambda kind, index: (kind, index),
+        cuda=SimpleNamespace(current_device=lambda: 0),
+    )
+    gate = function(
+        "vllm_sail/platform.py",
+        "PPUPlatform.apply_config_platform_defaults",
+        {"logger": SimpleNamespace(info_once=lambda *args: None)},
+    )
+    config = SimpleNamespace(
+        kernel_config=SimpleNamespace(moe_backend="deep_gemm_mega_moe"),
+        model_config=SimpleNamespace(),
+        parallel_config=SimpleNamespace(enable_eplb=True),
+        compilation_config=SimpleNamespace(custom_ops=[]),
+        attention_config=SimpleNamespace(),
+        speculative_config=None,
+    )
+    return gate, config, envs, calls
+
+
+@pytest.mark.parametrize("model_type", ["deepseek_v41", "kimi_k31", "other_moe"])
+@pytest.mark.parametrize("mode", _MEGAMOE_MODE_APIS)
+@pytest.mark.parametrize("intermediate", [None, 128])
+def test_megamoe_platform_gate_accepts_models_and_eplb(
+    megamoe_platform_gate, model_type, mode, intermediate
+):
+    gate, config, envs, calls = megamoe_platform_gate
+    text_config = SimpleNamespace(model_type=model_type, hidden_size=2048)
+    if intermediate is not None:
+        text_config.moe_intermediate_size = intermediate
+    config.model_config.hf_text_config = text_config
+    envs.VLLM_SAIL_MEGA_MOE_MMA_TYPE = mode
+    gate(None, config)
+    assert calls == [(("cuda", 0), 2048, intermediate, mode)]
+
+
+def test_megamoe_platform_gate_rejects_declared_non_fp4_experts(megamoe_platform_gate):
+    gate, config, _, calls = megamoe_platform_gate
+    config.model_config.hf_text_config = SimpleNamespace(
+        model_type="other_moe", hidden_size=2048, expert_dtype="fp8"
+    )
+    with pytest.raises(ValueError, match="requires MXFP4 experts"):
+        gate(None, config)
+    assert calls == []
 
 
 @pytest.mark.parametrize("tokens", [0, 3])
