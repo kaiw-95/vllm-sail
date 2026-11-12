@@ -324,6 +324,7 @@ def ppu_sparse_attn_indexer(
                         chunk.cu_seqlen_ke,
                         clean_logits=False,
                         logits_dtype=torch.bfloat16,
+                        max_seqlen_k=max_model_len,
                     )
                 elif q_dtype == torch.int8:
                     logits = int8_mqa_logits(
@@ -333,6 +334,7 @@ def ppu_sparse_attn_indexer(
                         chunk.cu_seqlen_ks,
                         chunk.cu_seqlen_ke,
                         clean_logits=False,
+                        max_seqlen_k=max_model_len,
                     )
                 elif q_dtype == torch.float8_e4m3fn:
                     logits = fp8_mqa_logits(
@@ -342,6 +344,7 @@ def ppu_sparse_attn_indexer(
                         chunk.cu_seqlen_ks,
                         chunk.cu_seqlen_ke,
                         clean_logits=False,
+                        max_seqlen_k=max_model_len,
                     )
                 else:
                     raise RuntimeError(
@@ -353,10 +356,9 @@ def ppu_sparse_attn_indexer(
             num_rows = logits.shape[0]
             row_starts = chunk.cu_seqlen_ks
             row_ends = chunk.cu_seqlen_ke
-            if use_fp4_cache:
-                # The weighted MXFP4 API emits query-relative columns.
-                row_ends = (row_ends - row_starts).clamp_min(0)
-                row_starts = torch.zeros_like(row_ends)
+            # All non-paged policies use compressed, query-relative columns.
+            row_ends = (row_ends - row_starts).clamp_min(0)
+            row_starts = torch.zeros_like(row_ends)
             if candidate_blocks is not None:
                 _filter_candidates(
                     logits,

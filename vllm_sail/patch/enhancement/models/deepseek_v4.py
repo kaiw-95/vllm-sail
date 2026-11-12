@@ -44,6 +44,38 @@ def _select_dsv4_attn_cls(vllm_config):
     return selected
 
 
+_INDEXER_MODULE = "vllm.models.deepseek_v4.attention"
+_INDEXER_Q_TARGET = f"{_INDEXER_MODULE}.DeepseekV4Indexer._q_rope_quant"
+
+
+@patch(
+    _INDEXER_MODULE,
+    "DeepseekV4Indexer._q_rope_quant",
+    reason=(
+        "SAIL MXFP4 logits require BF16 weights; emit them in the fused query "
+        "producer instead of allocating a conversion in every logits call."
+    ),
+    affected_versions=_AFFECTED,
+    remove_when="The V4 indexer selects its scoring weights dtype through a platform hook.",
+)
+def indexer_q_rope_quant(self, positions, q, rotary_emb, indexer_weights):
+    if current_platform.is_ppu() and self.use_fp4_kv:
+        from vllm.models.deepseek_v4.attention import fused_indexer_q_rope_quant
+
+        return fused_indexer_q_rope_quant(
+            positions,
+            q,
+            rotary_emb.cos_sin_cache,
+            indexer_weights,
+            self.softmax_scale,
+            self.n_head**-0.5,
+            use_fp4=True,
+            weights_out_dtype=torch.bfloat16,
+        )
+    original = getattr(indexer_q_rope_quant, PATCH_MARKER)[_INDEXER_Q_TARGET]
+    return original(self, positions, q, rotary_emb, indexer_weights)
+
+
 _Q_MODULE = "vllm.models.deepseek_v4.common.ops.fused_indexer_q"
 _K_MODULE = "vllm.models.deepseek_v4.common.ops.fused_compress_quant_cache"
 _INDEXER_ALIAS_CONSUMERS = {

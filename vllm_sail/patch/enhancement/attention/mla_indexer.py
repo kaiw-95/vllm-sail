@@ -7,8 +7,8 @@ upstream: ``__init__`` delegates to the original method and re-applies only the
 fork's PPU state, ``build`` delegates untouched, so upstream drift (new
 helpers, new parameters, refactors) cannot break this plugin.
 
-* Two module-level constants added by the fork (``PPU_DEEP_GEMM_TB_PER_CU``,
-  ``PPU_FP4_INDEXER_ELEMENT_SIZE``) — installed with ``patch_value``.
+* ``PPU_DEEP_GEMM_TB_PER_CU`` sizes the PPU schedule buffer and is installed
+  with ``patch_value``. Metadata describes quantization using torch.dtype.
 * The fork's import switch (``vllm.utils.ppu_deep_gemm`` instead of
   ``vllm.utils.deep_gemm`` under ``is_ppu()``): ``has_deep_gemm`` is an
   identity (same object); ``get_paged_mqa_logits_metadata`` is rebound on the
@@ -73,19 +73,6 @@ patch_value(
     reason=(
         "Fork constant: thread blocks per compute unit used by PPU DeepGEMM "
         "when sizing the fp4 indexer scheduler-metadata buffer."
-    ),
-    affected_versions=_AFFECTED,
-    remove_when="upstream defines the constant itself (patch_value becomes a no-op).",
-)
-
-patch_value(
-    _MODULE,
-    "PPU_FP4_INDEXER_ELEMENT_SIZE",
-    1,
-    allow_missing=True,
-    reason=(
-        "Fork constant: element size (bytes) of the PPU fp4 indexer cache, "
-        "passed to the PPU paged MQA logits metadata builder via metadata_extra."
     ),
     affected_versions=_AFFECTED,
     remove_when="upstream defines the constant itself (patch_value becomes a no-op).",

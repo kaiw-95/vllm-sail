@@ -104,6 +104,16 @@ def sparse_attn_indexer_init(
     # during model construction) and pass them into the custom op, rather
     # than threading them through per-step metadata.
     vllm_config = get_current_vllm_config()
+    # PPU MODIFICATION: begin
+    if current_platform.is_ppu():
+        # The op receives a capacity in compressed KV-position units. Keep a
+        # larger explicit caller bound for any additional runtime positions.
+        self.max_model_len = max(
+            max_model_len,
+            (vllm_config.model_config.max_model_len + compress_ratio - 1)
+            // compress_ratio,
+        )
+    # PPU MODIFICATION: end
     parallel_config = vllm_config.parallel_config
     self.topk_backend = vllm_config.kernel_config.sparse_indexer_topk_backend
     self._parallel_config = parallel_config

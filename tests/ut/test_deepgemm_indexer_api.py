@@ -17,11 +17,10 @@ class Tensor:
         self.ndim = len(shape)
 
     def to(self, dtype):
-        self.dtype = dtype
-        return self
+        pytest.fail("weights must be forwarded without casting")
 
     def contiguous(self):
-        return self
+        pytest.fail("weights must retain their original row layout")
 
 
 def _api_namespace(symbol):
@@ -46,12 +45,13 @@ def test_weighted_mxfp4_uses_relative_column_api():
     ns, calls = _api_namespace("_fp8_fp4_mqa_logits_impl")
     fn = function(DEEP_GEMM, "fp8_fp4_mqa_logits", ns)
     q, kv = (Tensor((2, 32, 64)), object()), (Tensor((257, 64)), object())
-    weights, starts, ends = Tensor((2, 32), "fp32"), object(), object()
-    assert fn(q, kv, weights, starts, ends, False) == "logits"
-    assert calls == [((q, kv, weights, starts, ends), {"max_seqlen_k": 257})]
+    weights, starts, ends = Tensor((2, 32)), object(), object()
+    assert fn(q, kv, weights, starts, ends, False, max_seqlen_k=129) == "logits"
+    assert calls == [((q, kv, weights, starts, ends), {"max_seqlen_k": 129})]
+    assert calls[0][0][2] is weights
     assert weights.dtype == "bf16"
     with pytest.raises(ValueError, match="BF16"):
-        fn(q, kv, weights, starts, ends, False, logits_dtype="fp32")
+        fn(q, kv, weights, starts, ends, False, logits_dtype="fp32", max_seqlen_k=129)
     assert len(calls) == 1
 
 
@@ -59,12 +59,57 @@ def test_paged_weighted_mxfp4_forwards_the_same_request_ids():
     ns, calls = _api_namespace("_fp8_fp4_paged_mqa_logits_impl")
     fn = function(DEEP_GEMM, "fp8_fp4_paged_mqa_logits", ns)
     ids, contexts, tables, schedule = object(), object(), object(), object()
-    q, cache, weights = object(), object(), Tensor((6, 32), "fp32")
+    q, cache, weights = object(), object(), Tensor((6, 32))
     assert fn(q, cache, weights, contexts, tables, schedule, 8192, False,
               indices=ids) == "logits"
     assert calls == [(
         (q, cache, weights, contexts, tables, schedule, 8192), {"indices": ids}
     )]
+    assert calls[0][0][2] is weights
+
+
+@pytest.mark.parametrize("paged", [False, True])
+def test_weighted_mxfp4_rejects_fp32_instead_of_silently_casting(paged):
+    name = "fp8_fp4_paged_mqa_logits" if paged else "fp8_fp4_mqa_logits"
+    ns, calls = _api_namespace("_" + name + "_impl")
+    fn = function(DEEP_GEMM, name, ns)
+    weights = Tensor((2, 32), "fp32")
+    with pytest.raises(TypeError, match="BF16 weights"):
+        if paged:
+            fn(None, None, weights, None, None, None, 129, False, indices=None)
+        else:
+            fn(None, None, weights, None, None, False, max_seqlen_k=129)
+    assert not calls
+
+
+@pytest.mark.parametrize("name", ["fp8_mqa_logits", "int8_mqa_logits"])
+@pytest.mark.parametrize("capacity", [0, 129])
+def test_legacy_nonpaged_forwards_compressed_capacity_and_original_weights(name, capacity):
+    ns, calls = _api_namespace("_" + name + "_impl")
+    fn = function(DEEP_GEMM, name, ns)
+    weights = Tensor((2, 32), "fp32")
+    assert fn(None, None, weights, None, None, False, max_seqlen_k=capacity) == "logits"
+    assert calls[0][0][2] is weights
+    assert calls[0][1] == {"clean_logits": False, "max_seqlen_k": capacity}
+
+
+@pytest.mark.parametrize("dtype", ["bf16", "fp32"])
+def test_int8_preserves_callers_weights_dtype(dtype):
+    ns, calls = _api_namespace("_int8_mqa_logits_impl")
+    weights = Tensor((2, 32), dtype)
+    fn = function(DEEP_GEMM, "int8_mqa_logits", ns)
+    fn(None, None, weights, None, None, False, max_seqlen_k=129)
+    assert calls[0][0][2] is weights
+    assert weights.dtype == dtype
+
+
+@pytest.mark.parametrize("capacity", [0, -1])
+def test_mxfp4_rejects_nonpositive_window_capacity(capacity):
+    ns, calls = _api_namespace("_fp8_fp4_mqa_logits_impl")
+    fn = function(DEEP_GEMM, "fp8_fp4_mqa_logits", ns)
+    with pytest.raises(ValueError, match="positive max_seqlen_k"):
+        fn(None, None, Tensor((2, 32)), None, None, False, max_seqlen_k=capacity)
+    assert not calls
 
 
 @pytest.mark.parametrize("contexts,lengths,expected", [
