@@ -966,6 +966,19 @@ def sparse_indexer(installed):
     )
 
 
+@pytest.mark.parametrize("ppu", [False, True])
+@pytest.mark.parametrize("fp4_cache", [False, True])
+def test_dense_indexer_owns_the_ppu_weights_dtype(
+    installed, sparse_indexer, ppu, fp4_cache
+):
+    installed.platform.ppu = ppu
+    indexer = sparse_indexer.construct(use_fp4_cache=fp4_cache)
+    if ppu:
+        assert indexer.weights_dtype == ("bf16" if fp4_cache else "fp32")
+    else:
+        assert not hasattr(indexer, "weights_dtype")
+
+
 @pytest.mark.parametrize(
     "runtime_len,ratio,caller_bound,expected",
     [

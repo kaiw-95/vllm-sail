@@ -118,7 +118,11 @@ def builder_factory(modules, patch_utils_module):
                 "_supports_flattened_device_query_lens",
             )
         }
+        upstream_chunker = Builder._split_indexer_prefill_chunks
         installed = load_patch(PATCH)
+        # The sparse subclass already converts its BF16 budget into the
+        # dense chunker's FP32 units. Preserve the shared upstream function.
+        assert Builder._split_indexer_prefill_chunks is upstream_chunker
         for name, original in originals.items():
             replacement = getattr(installed, name)
             assert getattr(provider, name) is replacement
@@ -241,12 +245,6 @@ def test_subclass_constructs_through_the_parent_once(builder_factory):
             "_update_draft_decode_wrapper",
             "v1/attention/backends/mla/indexer",
             "DeepseekV32IndexerMetadataBuilder.update_draft_decode_metadata",
-        ),
-        (
-            "attention/mla_indexer",
-            "_split_indexer_prefill_chunks_body",
-            "v1/attention/backends/mla/indexer",
-            "DeepseekV32IndexerMetadataBuilder._split_indexer_prefill_chunks",
         ),
     ],
 )

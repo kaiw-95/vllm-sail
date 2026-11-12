@@ -11,14 +11,6 @@ from tests.support.source import definition, function
 PATCH = "vllm_sail/patch/enhancement/attention/mla_indexer.py"
 
 
-class Row:
-    def __init__(self, value):
-        self.value = value
-
-    def item(self):
-        return self.value
-
-
 class Span:
     shape = (3, 1)
     ndim = 2
@@ -240,39 +232,6 @@ def test_paged_metadata_delegates_on_non_ppu(modules):
     assert result == "upstream-metadata"
     assert not calls
     assert fallback == [(ANY, 64, 7, None)]
-
-
-@pytest.mark.parametrize("fp4,chunks", [(True, 2), (False, 4)])
-def test_chunk_budget_follows_the_builder_logits_dtype(fp4, chunks):
-    namespace = {
-        "_current_builder": [NS(indexer_uses_fp4=fp4)],
-        "torch": NS(
-            bfloat16="bfloat16",
-            float32="float32",
-            empty=lambda shape, dtype=None, **kwargs: NS(
-                element_size=lambda: 2 if dtype == "bfloat16" else 4
-            ),
-        ),
-    }
-    split = function(PATCH, "_split_indexer_prefill_chunks_body", namespace)
-
-    assert len(split([Row(100)], [Row(8)], 10_000, 1024)) == chunks
-
-
-def test_chunk_budget_falls_back_to_fp32_outside_build():
-    namespace = {
-        "_current_builder": [],
-        "torch": NS(
-            bfloat16="bfloat16",
-            float32="float32",
-            empty=lambda shape, dtype=None, **kwargs: NS(
-                element_size=lambda: 2 if dtype == "bfloat16" else 4
-            ),
-        ),
-    }
-    split = function(PATCH, "_split_indexer_prefill_chunks_body", namespace)
-
-    assert len(split([Row(100)], [Row(8)], 10_000, 1024)) == 4
 
 
 @pytest.mark.upstream_source

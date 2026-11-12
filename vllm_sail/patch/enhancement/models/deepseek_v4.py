@@ -70,7 +70,7 @@ def indexer_q_rope_quant(self, positions, q, rotary_emb, indexer_weights):
             self.softmax_scale,
             self.n_head**-0.5,
             use_fp4=True,
-            weights_out_dtype=torch.bfloat16,
+            weights_out_dtype=self.indexer_op.weights_dtype,
         )
     original = getattr(indexer_q_rope_quant, PATCH_MARKER)[_INDEXER_Q_TARGET]
     return original(self, positions, q, rotary_emb, indexer_weights)

@@ -3,7 +3,6 @@
 
 from dataclasses import replace
 
-import torch
 from vllm.models.deepseek_v41 import attention
 from vllm.platforms import current_platform
 from vllm.v1.attention.backends.mla.indexer import DeepseekV41IndexerBackend
@@ -32,8 +31,9 @@ def indexer_init(self, *args, **kwargs):
     if current_platform.is_ppu():
         self.k_cache.n_head = self.n_head
         self.k_cache.q_head_dim = self.head_dim
-        if self.use_fp4_kv:
-            self.indexer_weights_dtype = torch.bfloat16
+        # Keep upstream's selected operator authoritative: SparseAttnIndexer
+        # publishes the dense SAIL contract; SparseMQAIndexer owns its own.
+        self.indexer_weights_dtype = self.indexer_op.weights_dtype
 
 
 @patch(

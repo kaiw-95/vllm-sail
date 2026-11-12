@@ -56,7 +56,8 @@ def _with_target_globals(fn):
         "raises on CUDA. PPU inherits the CUDA raise via PlatformEnum.CUDA, so "
         "the fork's PPU branch must run first. Delegation cannot intercept the "
         "upstream raise, hence the verbatim body. PPU logits still require SAIL "
-        "DeepGEMM."
+        "DeepGEMM. The PPU op also publishes its required producer weights "
+        "dtype, following SparseMQAIndexer's contract."
     ),
     affected_versions=_AFFECTED,
     remove_when="upstream downgrades the missing-DeepGEMM error to a warning, or PPU always ships DeepGEMM.",
@@ -106,6 +107,9 @@ def sparse_attn_indexer_init(
     vllm_config = get_current_vllm_config()
     # PPU MODIFICATION: begin
     if current_platform.is_ppu():
+        # Match SparseMQAIndexer's operator-owned producer contract. The
+        # dense SAIL APIs require BF16 weights for MXFP4 and FP32 otherwise.
+        self.weights_dtype = torch.bfloat16 if use_fp4_cache else torch.float32
         # The op receives a capacity in compressed KV-position units. Keep a
         # larger explicit caller bound for any additional runtime positions.
         self.max_model_len = max(

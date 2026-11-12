@@ -203,18 +203,20 @@ def test_fp4_query_forwards_scoring_weights_dtype(installed):
 
 
 @pytest.mark.parametrize("ppu,fp4", [(True, True), (True, False), (False, True)])
-def test_v4_model_selects_bf16_weights_only_for_ppu_mxfp4(
-    installed, patch_utils_module, ppu, fp4
+@pytest.mark.parametrize("weights_dtype", ["bfloat16", "operator-dtype"])
+def test_v4_model_uses_the_operator_weights_dtype_for_ppu_mxfp4(
+    installed, patch_utils_module, ppu, fp4, weights_dtype
 ):
     platform, modules, calls, patched = installed
     platform.ppu, platform.capability = ppu, (8, 9)
     indexer = modules[f"{BASE}.attention"].DeepseekV4Indexer()
     indexer.use_fp4_kv, indexer.softmax_scale, indexer.n_head = fp4, 0.5, 32
+    indexer.indexer_op = types.SimpleNamespace(weights_dtype=weights_dtype)
     rotary = types.SimpleNamespace(cos_sin_cache="rotary")
     result = indexer._q_rope_quant("positions", "q", rotary, "weights")
     if ppu and fp4:
         assert result == "upstream_q"
-        assert calls[-1][2] == {"use_fp4": True, "weights_out_dtype": "bfloat16"}
+        assert calls[-1][2] == {"use_fp4": True, "weights_out_dtype": weights_dtype}
     else:
         assert result == "upstream_method"
     target = patched._INDEXER_Q_TARGET

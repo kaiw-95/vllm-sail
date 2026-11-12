@@ -17,10 +17,9 @@ helpers, new parameters, refactors) cannot break this plugin.
   ``is_cuda() and has_deep_gemm()`` block; the rebound helper derives the
   fork's ``metadata_extra`` from the builder currently inside ``build``, so
   upstream's own buffer fill already uses the fp4 layout.
-* ``_split_indexer_prefill_chunks`` derives a logits-dtype-aware budget
-  from the builder's fp4 capability (PPU-only delta: both upstreams budget
-  a fixed 4 bytes/elem), so the fp4 indexer (bf16 logits) chunks against
-  the correct logits budget.
+* Prefill chunking keeps upstream's FP32 budget. This is conservative for
+  dense BF16 logits; the candidate-sparse backend already accounts for BF16
+  in its split sequence lengths and must not have that saving applied twice.
 * PPU SM89 uses upstream's device-built varlen query rows and request IDs.
   The SAIL adapter passes those expanded rows to its next_n=1 logits API.
   Flattened device query lengths remain supported on legacy PPU too.
@@ -30,8 +29,8 @@ helpers, new parameters, refactors) cannot break this plugin.
   fp4 scheduler-metadata buffer.
 * ``DeepseekV32IndexerMetadataBuilder.build`` delegates to upstream, keeping
   the builder on ``_current_builder`` for the duration of the call so the
-  static chunk splitter and the rebound paged-metadata helper can read the
-  fork's fp4 capability. Upstream owns the whole step build.
+  rebound paged-metadata helper can read the fork's fp4 capability. Upstream
+  owns the whole step build.
 * ``_prepare_decode_tensors`` preserves MXFP4 query ownership from the
   separate per-request counts. The prebuilt metadata call uses these IDs
   instead of numbering already-flattened MTP queries as separate requests;
@@ -59,9 +58,8 @@ from vllm_sail.patch.utils import patch, patch_value
 _AFFECTED = ">=0.33.0,<0.34.0"
 _MODULE = "vllm.v1.attention.backends.mla.indexer"
 
-#: Builder currently inside ``build``. The static chunk splitter and the
-#: paged-MQA-logits metadata helper read the fork's fp4 capability from it
-#: (neither upstream passes those values explicitly).
+#: Builder currently inside ``build``. The rebound paged-MQA-logits metadata
+#: helper reads the fork's fp4 capability from it; upstream does not pass it.
 _current_builder: list = []
 
 
@@ -218,83 +216,6 @@ patch(
     affected_versions=_AFFECTED,
     remove_when="The indexer delegates flattened device-query-length support to the platform.",
 )(_supports_flattened_device_query_lens)
-
-
-def _split_indexer_prefill_chunks_body(
-    compressed_seq_lens_cpu: torch.Tensor,
-    prefill_query_lens_cpu: torch.Tensor,
-    workspace_size: int,
-    max_logits_bytes: int,
-    request_offset: int = 0,
-) -> list[tuple[slice, slice]]:
-    """Upstream chunker with the fork's logits_dtype budget.
-
-    PPU-only delta: neither upstream passes ``logits_dtype`` (both budget a
-    fixed 4 bytes/elem), so the dtype is derived from the builder currently
-    inside ``build`` (see ``_current_builder``). bf16 (fp4 indexer) halves
-    max_logits_elems; fp32 matches upstream. Falls back to fp32 outside
-    ``build``.
-    """
-    chunks: list[tuple[slice, slice]] = []
-    n = len(compressed_seq_lens_cpu)
-    # PPU MODIFICATION: begin
-    _builder = _current_builder[-1] if _current_builder else None
-    logits_dtype = (
-        torch.bfloat16
-        if _builder is not None and getattr(_builder, "indexer_uses_fp4", False)
-        else torch.float32
-    )
-    bytes_per_elem = torch.empty((), dtype=logits_dtype).element_size()
-    max_logits_elems = max(1, max_logits_bytes // bytes_per_elem)
-    # PPU MODIFICATION: end
-    end = 0
-
-    while end < n:
-        start, chunk_m, chunk_n = end, 0, 0
-
-        while end < n:
-            q, s = (
-                prefill_query_lens_cpu[end].item(),
-                compressed_seq_lens_cpu[end].item(),
-            )
-            new_m, new_n = chunk_m + q, chunk_n + s
-            if new_n <= workspace_size and new_m * new_n <= max_logits_elems:
-                chunk_m, chunk_n = new_m, new_n
-                end += 1
-            else:
-                break
-
-        # A single request can exceed the budget, requiring sub-chunking
-        # on the query dimension.
-        if end == start:
-            chunk_m, chunk_n = (
-                prefill_query_lens_cpu[end].item(),
-                compressed_seq_lens_cpu[end].item(),
-            )
-            end += 1
-
-        req_slice = slice(start + request_offset, end + request_offset)
-        max_q = max(1, max_logits_elems // chunk_n) if chunk_n > 0 else max(1, chunk_m)
-        for q_off in range(0, chunk_m, max_q):
-            sub_m = min(max_q, chunk_m - q_off)
-            chunks.append((req_slice, slice(q_off, q_off + sub_m)))
-
-    return chunks
-
-
-patch(
-    _MODULE,
-    "DeepseekV32IndexerMetadataBuilder._split_indexer_prefill_chunks",
-    reason=(
-        "Fork chunks the fp4 indexer cache (bf16 logits) against the correct "
-        "logits budget. Neither upstream passes logits_dtype (both budget a "
-        "fixed 4 bytes/elem), so the dtype derives from the builder currently "
-        "inside build (_current_builder). The max(1, ...) clamp differs from "
-        "upstream, which can yield 0."
-    ),
-    affected_versions=_AFFECTED,
-    remove_when="upstream grows a logits-dtype-aware chunk budget.",
-)(staticmethod(_split_indexer_prefill_chunks_body))
 
 
 _upstream_uses_fp4 = _indexer_module.dsa_indexer_uses_fp4
@@ -514,15 +435,15 @@ patch(
     "DeepseekV32IndexerMetadataBuilder.build",
     reason=(
         "Keeps the builder on _current_builder while upstream builds the step, "
-        "so the static chunk splitter and the rebound paged-MQA-logits "
-        "metadata helper can read the fork's fp4 capability. Upstream keeps "
-        "ownership of the step build (including TP prefill row sharding), so "
+        "so the rebound paged-MQA-logits metadata helper can read the fork's "
+        "fp4 capability. Upstream keeps ownership of the step build "
+        "(including TP prefill row sharding), so "
         "upstream drift cannot break this plugin."
     ),
     affected_versions=_AFFECTED,
     remove_when=(
-        "upstream exposes the builder to the static chunk splitter and paged "
-        "metadata helper without module-level context."
+        "upstream exposes the builder to the paged metadata helper without "
+        "module-level context."
     ),
 )(_build_wrapper)
 

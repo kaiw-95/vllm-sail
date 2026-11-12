@@ -123,6 +123,14 @@ On Zhenwu 810E, the GLM indexer uses INT8. Selecting MXFP4 indexer cache
 explicitly is supported only for DeepSeek V4/V4.1 on M890. These format
 rules do not enable MegaMoE for GLM's ordinary FusedMoE path.
 
+The v0.33 integration retains upstream's `SparseAttnIndexer` for dense
+scoring, including candidate masking. V4/V4.1 query producers use the selected
+operator's `weights_dtype` contract. The separate candidate-only
+`SparseMQAIndexer` path (`attention_config.indexer_sparse_logits`) retains
+upstream's capability checks and is not enabled on PPU. Prefill chunking
+also retains upstream's memory budget: it is conservative for dense BF16
+logits and preserves the sparse backend's own BF16 budget calculation.
+
 ## Compatibility controls
 
 For FP8/BF16 conversion and recipe selection, see [Online quantization](online_quantization.md).
