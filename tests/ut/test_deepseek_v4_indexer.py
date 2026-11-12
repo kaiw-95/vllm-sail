@@ -56,6 +56,11 @@ def installed(monkeypatch, patch_utils_module):
 
     calls = []
 
+    class Indexer:
+        def _q_rope_quant(self, *args):
+            calls.append(("upstream_method", args, {}))
+            return "upstream_method"
+
     def upstream_q(
         positions,
         index_q,
@@ -94,7 +99,11 @@ def installed(monkeypatch, patch_utils_module):
 
     module(Q_PROVIDER, fused_indexer_q_rope_quant=upstream_q)
     module(f"{BASE}.common.ops", fused_indexer_q_rope_quant=upstream_q)
-    module(f"{BASE}.attention", fused_indexer_q_rope_quant=upstream_q)
+    module(
+        f"{BASE}.attention",
+        fused_indexer_q_rope_quant=upstream_q,
+        DeepseekV4Indexer=Indexer,
+    )
     module(K_PROVIDER, compress_norm_rope_store_triton=upstream_k)
     module(f"{BASE}.compressor", compress_norm_rope_store_triton=upstream_k)
     module(
@@ -187,6 +196,34 @@ def test_fp4_query_forwards_scoring_weights_dtype(installed):
         *range(6), use_fp4=True, weights_out_dtype="bfloat16"
     )
     assert calls[-1][2]["weights_out_dtype"] == "bfloat16"
+
+
+@pytest.mark.parametrize("ppu,fp4", [(True, True), (True, False), (False, True)])
+def test_v4_model_selects_bf16_weights_only_for_ppu_mxfp4(
+    installed, patch_utils_module, ppu, fp4
+):
+    platform, modules, calls, patched = installed
+    platform.ppu, platform.capability = ppu, (8, 9)
+    indexer = modules[f"{BASE}.attention"].DeepseekV4Indexer()
+    indexer.use_fp4_kv, indexer.softmax_scale, indexer.n_head = fp4, 0.5, 32
+    rotary = types.SimpleNamespace(cos_sin_cache="rotary")
+    result = indexer._q_rope_quant("positions", "q", rotary, "weights")
+    if ppu and fp4:
+        assert result == "upstream_q"
+        assert calls[-1][2] == {"use_fp4": True, "weights_out_dtype": "bfloat16"}
+    else:
+        assert result == "upstream_method"
+    target = patched._INDEXER_Q_TARGET
+    assert (
+        patch_utils_module.original_of(patched.indexer_q_rope_quant, target)
+        is not patched.indexer_q_rope_quant
+    )
+    with pytest.raises(RuntimeError, match="already"):
+        patch_utils_module.patch(
+            f"{BASE}.attention", "DeepseekV4Indexer._q_rope_quant",
+            reason="Duplicate dtype selection.", affected_versions=">=0.33.0,<0.34.0",
+            remove_when="The model selects the PPU weights dtype.",
+        )(lambda *args: None)
 
 
 def test_int8_query_requires_float32_scoring_weights(installed):

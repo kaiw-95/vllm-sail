@@ -3,6 +3,7 @@
 
 from dataclasses import replace
 
+import torch
 from vllm.models.deepseek_v41 import attention
 from vllm.platforms import current_platform
 from vllm.v1.attention.backends.mla.indexer import DeepseekV41IndexerBackend
@@ -19,15 +20,20 @@ _indexer_init = attention.DeepseekV4Indexer.__init__
 @patch(
     "vllm.models.deepseek_v41.attention",
     "DeepseekV4Indexer.__init__",
-    reason="SAIL paged logits metadata needs the V4.1 query head count and head dimension.",
+    reason=(
+        "SAIL needs V4.1 query geometry in its cache spec and BF16 weights "
+        "produced directly for the MXFP4 indexer API."
+    ),
     affected_versions=_AFFECTED,
-    remove_when="The upstream V4.1 indexer publishes query dimensions in its cache spec.",
+    remove_when="The upstream V4.1 indexer publishes query dimensions and selects SAIL's scoring weights dtype.",
 )
 def indexer_init(self, *args, **kwargs):
     _indexer_init(self, *args, **kwargs)
     if current_platform.is_ppu():
         self.k_cache.n_head = self.n_head
         self.k_cache.q_head_dim = self.head_dim
+        if self.use_fp4_kv:
+            self.indexer_weights_dtype = torch.bfloat16
 
 
 @patch(
