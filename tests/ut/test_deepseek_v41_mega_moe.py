@@ -454,9 +454,18 @@ def test_megamoe_geometry_matches_wheel_contract(
 
 @pytest.mark.parametrize("tokens", [0, 3])
 @pytest.mark.parametrize("with_shared", [False, True])
-@pytest.mark.parametrize("mode", _MEGAMOE_MODE_APIS)
+@pytest.mark.parametrize(
+    "mode,activation",
+    [
+        ("mxf4xmxf4", "swiglu"),
+        ("fp8xmxfp4", "swiglu"),
+        ("mxf4xmxf4", "situ"),
+        ("fp8xmxfp4", "situ"),
+        ("bf16xmxfp4", "situ"),
+    ],
+)
 def test_expert_forward_uses_sail_dispatch_and_main_shared_contract(
-    tokens, with_shared, mode
+    tokens, with_shared, mode, activation
 ):
     calls = []
 
@@ -481,7 +490,13 @@ def test_expert_forward_uses_sail_dispatch_and_main_shared_contract(
     )
     l1, l2 = object(), object()
     kernel_name = _MEGAMOE_MODE_APIS[mode][0]
-    expected_kwargs = {"fast_math": False, "activation": "swiglu"}
+    expected_kwargs = {"fast_math": False, "activation": activation}
+    if activation == "situ":
+        expected_kwargs.update(situ_beta=1.7, situ_linear_beta=-0.2)
+    else:
+        expected_kwargs["activation_clamp"] = 7.0
+    if mode == "mxf4xmxf4":
+        expected_kwargs["recipe"] = (1, 1, 32)
 
     def dispatch(
         x,
@@ -535,6 +550,7 @@ def test_expert_forward_uses_sail_dispatch_and_main_shared_contract(
         "mega_moe_api": get_api,
     }
     forward = function(_MEGAMOE_IMPL, f"{_MEGAMOE_CLASS}.forward", ns)
+    kernel_kwargs = function(_MEGAMOE_IMPL, f"{_MEGAMOE_CLASS}._kernel_kwargs", {})
     expert = SimpleNamespace(
         max_num_tokens=4,
         _synchronize_first_launch=lambda: calls.append("sync"),
@@ -542,10 +558,15 @@ def test_expert_forward_uses_sail_dispatch_and_main_shared_contract(
         eplb_state=SimpleNamespace(logical_to_physical_map=None),
         get_symm_buffer=lambda: buffer,
         mma_type=mode,
-        mma_format=SimpleNamespace(kernel=kernel_name),
+        mma_format=SimpleNamespace(
+            kernel=kernel_name,
+            transform=None if mode == "mxf4xmxf4" else "transform",
+        ),
+        activation=SimpleNamespace(name=activation, alpha=1.7, beta=-0.2, clamp=7.0),
+        fast_math=False,
         _kernel_weights=kernel_weights,
-        _kernel_kwargs=lambda: expected_kwargs,
     )
+    expert._kernel_kwargs = lambda: kernel_kwargs(expert)
     assert (
         forward(expert, hidden, weights, ids, shared if with_shared else None) is output
     )
