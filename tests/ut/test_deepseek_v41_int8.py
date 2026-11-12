@@ -98,7 +98,9 @@ def installed(monkeypatch, patch_utils_module):
         bfloat16="bf16",
         ops=types.SimpleNamespace(
             vllm=types.SimpleNamespace(
-                ppu_deepseek_v4_dequant_gather=operation("gather810")
+                ppu_deepseek_v4_dequant_gather=operation("gather810"),
+                ppu_deepseek_v41_mxfp8_dequant_gather=operation("gather810_mxfp8"),
+                ppu_deepseek_v41_nvfp4_dequant_gather=operation("gather810_nvfp4"),
             )
         ),
     )
@@ -268,6 +270,10 @@ def installed(monkeypatch, patch_utils_module):
     )
     module(PLUGIN + ".ops.latent_store", rope_quant_insert=operation("store810"))
     module(PLUGIN + ".ops.engram_lookup", lookup=operation("lookup810"))
+    module(
+        PLUGIN + ".ops.cache_gather",
+        register_ops=operation("register_v41_gather"),
+    )
 
     def load(name, relative):
         spec = importlib.util.spec_from_file_location(name, ROOT / relative)
@@ -408,6 +414,7 @@ def test_selector_cache_and_engram(installed, cap):
 def test_fp8_main_cache_decoding_does_not_enable_int8(
     installed, record_bytes, ppu, cap, use_fnuz
 ):
+    """Only 810E software-decodes, and each record width keeps its own kernel."""
     state = installed
     state.config.quant_config = None
     state.platform.ppu, state.platform.capability = ppu, cap
@@ -415,15 +422,18 @@ def test_fp8_main_cache_decoding_does_not_enable_int8(
     assert state.patch._uses_int8() is False
     cache = types.SimpleNamespace(dtype="uint8", shape=(2, 64, record_bytes))
     args = (0, cache, 2, None, 4, 64, 3)
-    selected = ppu and not use_fnuz and record_bytes in (528, 584)
+    selected = ppu and cap == (8, 0) and not use_fnuz
+    software = {584: "gather810", 528: "gather810_mxfp8", 288: "gather810_nvfp4"}
     consumer = state.modules[BASE + ".nvidia.prefill"].dequantize_and_gather_k_cache
     assert consumer(*args, use_fnuz=use_fnuz) == (
-        "gather810" if selected else "gather_upstream"
+        software[record_bytes] if selected else "gather_upstream"
     )
     assert state.calls[-1][1] == args
     assert state.calls[-1][2] == (
         {} if selected else dict(use_fnuz=use_fnuz, max_gather_len=None)
     )
+    if selected and record_bytes in (528, 288):
+        assert state.calls[-2][0] == "register_v41_gather"
     assert state.patch.fused_indexer_q_rope_quant(*range(6)) == "q_upstream"
     assert state.patch.indexer_k_norm_rope_store(*range(8), False) == "k_upstream"
 
@@ -445,16 +455,8 @@ def test_int8_main_cache_keeps_584_byte_contract(installed, record_bytes):
         )
 
 
-@pytest.mark.parametrize(
-    "record_bytes,fp8_dim,bf16_dim,scale_dim,quant_block",
-    [(528, 512, 0, 16, 32), (584, 448, 64, 8, 64)],
-)
-def test_software_main_cache_launch_preserves_plane_geometry(
-    record_bytes, fp8_dim, bf16_dim, scale_dim, quant_block
-):
+def _planar_dispatch(calls):
     from tests.support.source import function
-
-    calls = []
 
     class Kernel:
         def __getitem__(self, grid):
@@ -463,15 +465,18 @@ def test_software_main_cache_launch_preserves_plane_geometry(
 
             return launch
 
-    dispatch = function(
+    return function(
         "vllm_sail/models/deepseek_v4/ops/cache.py",
         "_dequantize_and_gather_k_cache_triton",
         {"_dequantize_and_gather_k_kernel_sm80": Kernel()},
     )
+
+
+def test_software_main_cache_launch_preserves_plane_geometry():
+    calls = []
+    dispatch = _planar_dispatch(calls)
     out = types.SimpleNamespace(stride=lambda dim: (102400, 1024)[dim])
-    cache = types.SimpleNamespace(
-        shape=(4, 64, record_bytes), stride=lambda dim: 64 * record_bytes + 512
-    )
+    cache = types.SimpleNamespace(shape=(4, 64, 584), stride=lambda dim: 64 * 584 + 512)
     seq_lens = types.SimpleNamespace(shape=(2,))
     table = types.SimpleNamespace(shape=(2, 4))
     dispatch(out, cache, seq_lens, None, table, 64, 3)
@@ -480,19 +485,36 @@ def test_software_main_cache_launch_preserves_plane_geometry(
     assert args == (out, 102400, 1024, cache, seq_lens, table, 3, None)
     assert kwargs == dict(
         max_blocks_per_seq=4,
-        fp8_dim=fp8_dim,
-        bf16_dim=bf16_dim,
-        scale_dim=scale_dim,
-        quant_block=quant_block,
+        fp8_dim=448,
+        bf16_dim=64,
+        scale_dim=8,
+        quant_block=64,
         cache_block_size=64,
-        token_data_size=fp8_dim + bf16_dim * 2,
-        block_stride=64 * record_bytes + 512,
+        token_data_size=576,
+        block_stride=64 * 584 + 512,
         output_dim=512,
         fp8_max=448.0,
-        n_quant_blocks=fp8_dim // quant_block,
+        n_quant_blocks=7,
     )
-    cache.shape = (4, 64, 132)
-    with pytest.raises(ValueError, match="528- or 584-byte"):
+    assert not calls
+
+
+@pytest.mark.parametrize("record_bytes", [528, 288, 132])
+def test_software_planar_gather_rejects_interleaved_records(record_bytes):
+    """The planar V4 kernel must never silently read a V4.1 interleaved record.
+
+    Regression guard for the 528B branch that reused the planar address formula
+    and misread every token's values and scales.
+    """
+    calls = []
+    dispatch = _planar_dispatch(calls)
+    out = types.SimpleNamespace(stride=lambda dim: (102400, 1024)[dim])
+    cache = types.SimpleNamespace(
+        shape=(4, 64, record_bytes), stride=lambda dim: 64 * record_bytes + 512
+    )
+    seq_lens = types.SimpleNamespace(shape=(2,))
+    table = types.SimpleNamespace(shape=(2, 4))
+    with pytest.raises(ValueError, match="584-byte V4 record"):
         dispatch(out, cache, seq_lens, None, table, 64, 3)
     assert not calls
 
