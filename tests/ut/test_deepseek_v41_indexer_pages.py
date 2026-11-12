@@ -12,7 +12,8 @@ from tests.support.source import function
 
 @pytest.mark.parametrize("ppu", [True, False])
 @pytest.mark.parametrize("ratio", [1, 2])
-def test_indexer_publishes_geometry_and_physical_pages(modules, ppu, ratio):
+@pytest.mark.parametrize("fp4", [False, True])
+def test_indexer_publishes_geometry_and_physical_pages(modules, ppu, ratio, fp4):
     @dataclass(frozen=True)
     class Spec:
         block_size: int = 256
@@ -30,6 +31,8 @@ def test_indexer_publishes_geometry_and_physical_pages(modules, ppu, ratio):
             self.k_cache = cache
             self.n_head = 32
             self.head_dim = 128
+            self.use_fp4_kv = fp4
+            self.indexer_weights_dtype = "fp32"
 
     class Backend:
         @staticmethod
@@ -37,6 +40,7 @@ def test_indexer_publishes_geometry_and_physical_pages(modules, ppu, ratio):
             return [128]
 
     modules("vllm.platforms", current_platform=SimpleNamespace(is_ppu=lambda: ppu))
+    modules("torch", bfloat16="bf16")
     modules(
         "vllm.models.deepseek_v41.attention",
         DeepseekV4IndexerCache=Cache,
@@ -46,7 +50,8 @@ def test_indexer_publishes_geometry_and_physical_pages(modules, ppu, ratio):
     load_patch("vllm_sail/patch/enhancement/models/deepseek_v41_indexer.py")
     cache = Cache()
     cache.compress_ratio = ratio
-    Indexer(cache)
+    indexer = Indexer(cache)
+    assert indexer.indexer_weights_dtype == ("bf16" if ppu and fp4 else "fp32")
     spec = cache.get_kv_cache_spec(object())
     if ppu:
         assert spec.block_size == 64 * ratio

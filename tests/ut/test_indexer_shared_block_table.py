@@ -51,7 +51,6 @@ def _paged_namespace(modules, *, ppu, builder=None):
         "_current_builder": [builder] if builder is not None else [],
         "_upstream_paged_metadata": upstream,
         "_ppu_deep_gemm": NS(get_paged_mqa_logits_metadata=paged),
-        "_indexer_module": NS(PPU_FP4_INDEXER_ELEMENT_SIZE=1),
         "torch": NS(int8="int8", int32="int32"),
     }
     modules("vllm.platforms", current_platform=NS(
