@@ -243,12 +243,14 @@ def test_model_temperature_preserves_request_budget_and_validation(
 
 def test_serve_preserves_json_and_checkpoint_arguments():
     presets = json.loads(sanity.CATALOG.read_text())
-    assert len(presets) == 8
+    assert len(presets) == 10
     for preset in presets:
         argv = sanity.serve_command(preset, Path("/models/space in name"), 9985)
         assert argv[4] == "/models/space in name"
         assert argv[argv.index("--host") + 1] == "127.0.0.1"
-        assert argv[argv.index("--served-model-name") + 1] == preset["key"]
+        assert argv[argv.index("--served-model-name") + 1] == preset.get(
+            "served_model_name", preset["key"]
+        )
         assert argv[-len(preset["args"]) :] == preset["args"]
         if "--speculative-config" in argv:
             config = json.loads(argv[argv.index("--speculative-config") + 1])
@@ -285,8 +287,9 @@ def test_insufficient_devices_fail_without_starting_a_server(tmp_path):
 
 
 @pytest.mark.parametrize("answer", ["hello", ""])
+@pytest.mark.parametrize("use_v41_settings", [False, True])
 def test_real_http_lifecycle_records_generation_and_cleans_up(
-    tmp_path, monkeypatch, answer
+    tmp_path, monkeypatch, answer, use_v41_settings
 ):
     """A strict HTTP double stands in for the external vLLM server only."""
     with socket.socket() as free_port:
@@ -300,32 +303,51 @@ import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 assert os.environ.get("VLLM_ENGINE_READY_TIMEOUT_S") == "20"
+assert os.environ.get("VLLM_USE_RUST_FRONTEND") == sys.argv[3]
+model_name = sys.argv[4]
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         assert self.path in {"/health", "/v1/models"}
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(json.dumps({"data": [{"id": "demo"}]}).encode())
+        self.wfile.write(json.dumps({"data": [{"id": model_name}]}).encode())
 
     def do_POST(self):
         assert self.path == "/v1/chat/completions"
         payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-        assert payload["model"] == "demo" and payload["messages"]
+        assert payload["model"] == model_name and payload["messages"]
         self.send_response(200)
         self.end_headers()
         self.wfile.write(json.dumps({
-            "model": "demo",
+            "model": model_name,
             "choices": [{"message": {"content": sys.argv[2]}, "finish_reason": "stop"}],
             "usage": {"completion_tokens": 1},
         }).encode())
 
 HTTPServer(("127.0.0.1", int(sys.argv[1])), Handler).serve_forever()
 """)
+    preset = {"key": "demo", "cards": 2, "args": []}
+    if use_v41_settings:
+        v41 = next(
+            item
+            for item in json.loads(sanity.CATALOG.read_text())
+            if item["key"] == "deepseek-v4.1-flash_1017_int8_tp8"
+        )
+        preset.update(served_model_name=v41["served_model_name"], env=v41["env"])
+    model_name = preset.get("served_model_name", preset["key"])
+    rust_frontend = "1" if use_v41_settings else "0"
     monkeypatch.setattr(
         sanity,
         "serve_command",
-        lambda *unused: [sys.executable, str(server), str(port), answer],
+        lambda *unused: [
+            sys.executable,
+            str(server),
+            str(port),
+            answer,
+            rust_frontend,
+            model_name,
+        ],
     )
     checkpoint = tmp_path / "checkpoint"
     checkpoint.mkdir()
@@ -338,12 +360,13 @@ HTTPServer(("127.0.0.1", int(sys.argv[1])), Handler).serve_forever()
         max_tokens=16,
     )
     result = sanity.run_preset(
-        {"key": "demo", "cards": 2, "args": []},
+        preset,
         checkpoint,
         args,
         available_cards=2,
     )
     assert result["status"] == ("passed" if answer else "failed")
+    assert result["serve_env"]["VLLM_USE_RUST_FRONTEND"] == rust_frontend
     assert json.loads((tmp_path / "demo" / "result.json").read_text()) == result
     assert (tmp_path / "demo" / "response-0.json").is_file()
     if answer:
@@ -359,7 +382,7 @@ HTTPServer(("127.0.0.1", int(sys.argv[1])), Handler).serve_forever()
     args.results_dir = tmp_path / "repeat"
     args.results_dir.mkdir()
     repeated = sanity.run_preset(
-        {"key": "demo", "cards": 2, "args": []},
+        preset,
         checkpoint,
         args,
         available_cards=2,
