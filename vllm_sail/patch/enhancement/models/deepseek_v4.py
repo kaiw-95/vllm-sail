@@ -96,6 +96,27 @@ _INDEXER_REMOVE_WHEN = (
 
 @patch(
     _Q_MODULE,
+    "_indexer_weights_out_dtypes",
+    reason="PPU SM89 dense MXFP4 query producers need BF16 explicit warmup keys.",
+    affected_versions=_AFFECTED,
+    remove_when="The query warmup enumerates the PPU dense MXFP4 weights dtype.",
+)
+def _indexer_weights_out_dtypes(vllm_config):
+    original = getattr(_indexer_weights_out_dtypes, PATCH_MARKER)[
+        f"{_Q_MODULE}._indexer_weights_out_dtypes"
+    ]
+    dtypes = original(vllm_config)
+    if (
+        current_platform.is_ppu()
+        and current_platform.is_device_capability((8, 9))
+        and torch.bfloat16 not in dtypes
+    ):
+        return (*dtypes, torch.bfloat16)
+    return dtypes
+
+
+@patch(
+    _Q_MODULE,
     "fused_indexer_q_rope_quant",
     reason=(
         "PPU 1.0 Triton cannot compile upstream's fp8e4nv indexer query cast. "
