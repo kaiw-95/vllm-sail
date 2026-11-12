@@ -32,7 +32,9 @@ def _api_namespace(symbol):
 
     return {
         "torch": NS(
-            bfloat16="bf16", float32="fp32", int64="int64",
+            bfloat16="bf16",
+            float32="fp32",
+            int64="int64",
             empty=lambda shape, dtype, device: Tensor(shape, dtype),
         ),
         "_lazy_init": lambda: None,
@@ -60,11 +62,13 @@ def test_paged_weighted_mxfp4_forwards_the_same_request_ids():
     fn = function(DEEP_GEMM, "fp8_fp4_paged_mqa_logits", ns)
     ids, contexts, tables, schedule = object(), object(), object(), object()
     q, cache, weights = object(), object(), Tensor((6, 32))
-    assert fn(q, cache, weights, contexts, tables, schedule, 8192, False,
-              indices=ids) == "logits"
-    assert calls == [(
-        (q, cache, weights, contexts, tables, schedule, 8192), {"indices": ids}
-    )]
+    assert (
+        fn(q, cache, weights, contexts, tables, schedule, 8192, False, indices=ids)
+        == "logits"
+    )
+    assert calls == [
+        ((q, cache, weights, contexts, tables, schedule, 8192), {"indices": ids})
+    ]
     assert calls[0][0][2] is weights
 
 
@@ -84,7 +88,9 @@ def test_weighted_mxfp4_rejects_fp32_instead_of_silently_casting(paged):
 
 @pytest.mark.parametrize("name", ["fp8_mqa_logits", "int8_mqa_logits"])
 @pytest.mark.parametrize("capacity", [0, 129])
-def test_legacy_nonpaged_forwards_compressed_capacity_and_original_weights(name, capacity):
+def test_legacy_nonpaged_forwards_compressed_capacity_and_original_weights(
+    name, capacity
+):
     ns, calls = _api_namespace("_" + name + "_impl")
     fn = function(DEEP_GEMM, name, ns)
     weights = Tensor((2, 32), "fp32")
@@ -112,18 +118,23 @@ def test_mxfp4_rejects_nonpositive_window_capacity(capacity):
     assert not calls
 
 
-@pytest.mark.parametrize("contexts,lengths,expected", [
-    ([[9, 10], [19, 20]], [2, 1], [[9], [10], [20], [0]]),
-    # C2 contexts must be shifted after compression, without a token offset.
-    ([[4, 5], [9, 10]], [2, 1], [[4], [5], [10], [0]]),
-])
+@pytest.mark.parametrize(
+    "contexts,lengths,expected",
+    [
+        ([[9, 10], [19, 20]], [2, 1], [[9], [10], [20], [0]]),
+        # C2 contexts must be shifted after compression, without a token offset.
+        ([[4, 5], [9, 10]], [2, 1], [[4], [5], [10], [0]]),
+    ],
+)
 def test_ragged_verify_keeps_request_contexts(contexts, lengths, expected):
     torch = pytest.importorskip("torch")
     fn = function(INDEXER, "_paged_decode_rows", {"torch": torch})
     lens, tables, ids = fn(
         torch.tensor(contexts, dtype=torch.int32),
         torch.tensor([[11, 12], [21, 22]], dtype=torch.int32),
-        torch.tensor(lengths, dtype=torch.int32), 2, None,
+        torch.tensor(lengths, dtype=torch.int32),
+        2,
+        None,
     )
     assert lens.tolist() == expected
     assert tables.tolist() == [[11, 12], [11, 12], [21, 22], [21, 22]]
@@ -136,7 +147,9 @@ def test_upstream_flattened_mtp_recovers_true_request_ownership():
     _, _, ids = fn(
         torch.tensor([[8], [9], [10], [7], [9], [10]], dtype=torch.int32),
         torch.zeros((6, 2), dtype=torch.int32),
-        torch.ones(6, dtype=torch.int32), 1, None,
+        torch.ones(6, dtype=torch.int32),
+        1,
+        None,
         torch.tensor([3, 1, 2], dtype=torch.int32),
     )
     assert ids.tolist() == [0, 0, 0, 1, 2, 2]
@@ -149,7 +162,11 @@ def test_varlen_device_rows_preserve_explicit_request_ids_and_padding():
     tables = torch.arange(14, dtype=torch.int32).reshape(7, 2)
     request_ids = torch.tensor([0, 0, 0, 1, 2, 2, 3], dtype=torch.int32)
     lens, expanded_tables, ids = fn(
-        contexts, tables, torch.ones(7, dtype=torch.int32), 1, request_ids,
+        contexts,
+        tables,
+        torch.ones(7, dtype=torch.int32),
+        1,
+        request_ids,
         torch.tensor([3, 1, 2], dtype=torch.int32),
     )
     assert torch.equal(lens, contexts)

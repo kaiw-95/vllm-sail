@@ -40,7 +40,9 @@ def _paged_namespace(modules, *, ppu, builder=None):
     fallback = []
 
     def paged(context_lens, block_size, num_sms, metadata_extra=None, **kwargs):
-        calls.append((context_lens, block_size, num_sms, metadata_extra, kwargs.get("indices")))
+        calls.append(
+            (context_lens, block_size, num_sms, metadata_extra, kwargs.get("indices"))
+        )
         return "ppu-metadata"
 
     def upstream(context_lens, block_size, num_sms, indices=None):
@@ -53,11 +55,14 @@ def _paged_namespace(modules, *, ppu, builder=None):
         "_ppu_deep_gemm": NS(get_paged_mqa_logits_metadata=paged),
         "torch": NS(int8="int8", int32="int32"),
     }
-    modules("vllm.platforms", current_platform=NS(
-        is_ppu=lambda: ppu,
-        is_device_capability=lambda cap: cap == (8, 9),
-        fp8_dtype=lambda: "fp8",
-    ))
+    modules(
+        "vllm.platforms",
+        current_platform=NS(
+            is_ppu=lambda: ppu,
+            is_device_capability=lambda cap: cap == (8, 9),
+            fp8_dtype=lambda: "fp8",
+        ),
+    )
     return namespace, calls, fallback
 
 
@@ -145,7 +150,9 @@ def test_prebuilt_metadata_keeps_request_ids_after_upstream_flattens(modules):
         return paged(prepared, 64, 7)
 
     namespace["_upstream_build"] = upstream_build
-    assert function(PATCH, "_build_wrapper", namespace)(builder, 0, None) == "ppu-metadata"
+    assert (
+        function(PATCH, "_build_wrapper", namespace)(builder, 0, None) == "ppu-metadata"
+    )
     assert calls == [(prepared, 64, 7, (1, 32, 128, "int8"), expected_ids)]
     assert builder._sail_decode_request_ids is None
 
@@ -159,7 +166,9 @@ def test_prebuilt_metadata_keeps_request_ids_after_upstream_flattens(modules):
         ((3, 2), [2, 1, 0], False, [0, 0, 1, -4, -5, -6]),
     ],
 )
-def test_prebuilt_request_ids_follow_query_ownership(shape, lengths, flattened, expected):
+def test_prebuilt_request_ids_follow_query_ownership(
+    shape, lengths, flattened, expected
+):
     torch = pytest.importorskip("torch")
     ids = function(PATCH, "_decode_request_ids", {"torch": torch})(
         torch.empty(shape, dtype=torch.int32),

@@ -224,8 +224,10 @@ def test_v4_model_selects_bf16_weights_only_for_ppu_mxfp4(
     )
     with pytest.raises(RuntimeError, match="already"):
         patch_utils_module.patch(
-            f"{BASE}.attention", "DeepseekV4Indexer._q_rope_quant",
-            reason="Duplicate dtype selection.", affected_versions=">=0.33.0,<0.34.0",
+            f"{BASE}.attention",
+            "DeepseekV4Indexer._q_rope_quant",
+            reason="Duplicate dtype selection.",
+            affected_versions=">=0.33.0,<0.34.0",
             remove_when="The model selects the PPU weights dtype.",
         )(lambda *args: None)
 
@@ -259,8 +261,10 @@ def test_fp4_warmup_includes_dense_ppu_weights_dtype(
     assert patch_utils_module.original_of(helper, target)(None) == ("float32",)
     with pytest.raises(RuntimeError, match="already"):
         patch_utils_module.patch(
-            Q_PROVIDER, "_indexer_weights_out_dtypes",
-            reason="Duplicate warmup selection.", affected_versions=">=0.33.0,<0.34.0",
+            Q_PROVIDER,
+            "_indexer_weights_out_dtypes",
+            reason="Duplicate warmup selection.",
+            affected_versions=">=0.33.0,<0.34.0",
             remove_when="The model selects the PPU weights dtype.",
         )(lambda *args: None)
 

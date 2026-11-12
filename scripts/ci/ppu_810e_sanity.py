@@ -44,7 +44,7 @@ def serve_command(preset: dict, checkpoint: Path, port: int) -> list[str]:
         "--port",
         str(port),
         "--served-model-name",
-        preset["key"],
+        preset.get("served_model_name", preset["key"]),
         *preset["args"],
     ]
 
@@ -171,6 +171,7 @@ def cleanup_signals():
 
 
 def run_preset(preset: dict, checkpoint: Path, args, available_cards: int) -> dict:
+    model_name = preset.get("served_model_name", preset["key"])
     output = args.results_dir / preset["key"]
     output.mkdir()  # A prior run must not be overwritten.
     argv = serve_command(preset, checkpoint, args.port)
@@ -209,6 +210,7 @@ def run_preset(preset: dict, checkpoint: Path, args, available_cards: int) -> di
             TRANSFORMERS_OFFLINE="1",
             VLLM_ENGINE_READY_TIMEOUT_S=str(args.ready_timeout),
         )
+        env.update(preset.get("env", {}))
         result["serve_env"] = {
             key: env[key]
             for key in (
@@ -246,7 +248,7 @@ def run_preset(preset: dict, checkpoint: Path, args, available_cards: int) -> di
                 try:
                     request_json(endpoint + "/health")
                     models = request_json(endpoint + "/v1/models")
-                    if preset["key"] in {m["id"] for m in models["data"]}:
+                    if model_name in {m["id"] for m in models["data"]}:
                         break
                 except (urllib.error.URLError, TimeoutError, OSError):
                     pass
@@ -258,7 +260,7 @@ def run_preset(preset: dict, checkpoint: Path, args, available_cards: int) -> di
 
             def generate(index: int) -> dict:
                 payload = {
-                    "model": preset["key"],
+                    "model": model_name,
                     "messages": [
                         {
                             "role": "user",
@@ -269,7 +271,7 @@ def run_preset(preset: dict, checkpoint: Path, args, available_cards: int) -> di
                             ),
                         }
                     ],
-                    "temperature": 0,
+                    "temperature": preset.get("temperature", 0),
                     "seed": 0,
                     "max_completion_tokens": args.max_tokens,
                 }
@@ -280,7 +282,7 @@ def run_preset(preset: dict, checkpoint: Path, args, available_cards: int) -> di
                     timeout=args.request_timeout,
                 )
                 write_json(output / f"response-{index}.json", response)
-                validate_completion(response, preset["key"])
+                validate_completion(response, model_name)
                 return response
 
             # Exercise a first request and a repeat/burst after warm-up. DP16

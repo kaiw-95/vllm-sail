@@ -19,17 +19,25 @@ def test_prefill_passes_window_bound_and_masks_relative_columns(
     if not hasattr(torch, "float8_e4m3fn"):
         pytest.skip("optional torch lacks FP8 dtype")
     fp4 = policy == "mxfp4"
-    q_dtype = torch.uint8 if fp4 else (
-        torch.int8 if policy == "int8" else torch.float8_e4m3fn
+    q_dtype = (
+        torch.uint8
+        if fp4
+        else (torch.int8 if policy == "int8" else torch.float8_e4m3fn)
     )
     chunk = NS(
-        total_seq_lens=205, skip_kv_gather=True, token_start=0, token_end=2,
+        total_seq_lens=205,
+        skip_kv_gather=True,
+        token_start=0,
+        token_end=2,
         cu_seqlen_ks=torch.tensor([0, 100], dtype=torch.int32),
         cu_seqlen_ke=torch.tensor([3, 105], dtype=torch.int32),
     )
     metadata = NS(
-        slot_mapping=torch.arange(2), num_decodes=0, num_prefills=1,
-        num_decode_tokens=0, prefill=NS(chunks=[chunk]),
+        slot_mapping=torch.arange(2),
+        num_decodes=0,
+        num_prefills=1,
+        num_decode_tokens=0,
+        prefill=NS(chunks=[chunk]),
     )
     weights = torch.ones((2, 32), dtype=torch.bfloat16 if fp4 else torch.float32)
     calls = []
@@ -59,9 +67,11 @@ def test_prefill_passes_window_bound_and_masks_relative_columns(
         def __getattr__(self, name):
             return getattr(torch, name)
 
-    workspace = NS(get_simultaneous=lambda *specs: [
-        torch.empty(shape, dtype=dtype) for shape, dtype in specs
-    ])
+    workspace = NS(
+        get_simultaneous=lambda *specs: [
+            torch.empty(shape, dtype=dtype) for shape, dtype in specs
+        ]
+    )
     namespace = {
         "torch": Torch(),
         "_resolve_layer_name": lambda name: name,
@@ -81,11 +91,23 @@ def test_prefill_passes_window_bound_and_masks_relative_columns(
     fn = function(INDEXER, "ppu_sparse_attn_indexer", namespace)
     out = torch.full((2, 2), -1, dtype=torch.int32)
     result = fn(
-        torch.empty((2, 1)), "cache", None,
+        torch.empty((2, 1)),
+        "cache",
+        None,
         torch.empty((2, 32, 64 if fp4 else 128), dtype=q_dtype),
         torch.empty((2, 32), dtype=torch.int32) if fp4 else None,
-        None, weights, 128, "ue8m0", 2, 128, model_bound, 205, out, True,
-        use_fp4_cache=fp4, candidate_blocks=torch.empty((2, 1)),
+        None,
+        weights,
+        128,
+        "ue8m0",
+        2,
+        128,
+        model_bound,
+        205,
+        out,
+        True,
+        use_fp4_cache=fp4,
+        candidate_blocks=torch.empty((2, 1)),
         candidate_block_size=64,
     )
     assert result is out

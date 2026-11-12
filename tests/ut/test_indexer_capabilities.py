@@ -23,12 +23,17 @@ def test_ppu_query_length_capabilities(modules, capability, varlen, available):
     namespace = {
         "_ppu_deep_gemm": NS(is_deep_gemm_supported=lambda: available),
         "_upstream_supports_varlen_paged_mqa_logits": lambda: pytest.fail("CUDA probe"),
-        "_upstream_supports_flattened_device_query_lens": lambda: pytest.fail("CUDA probe"),
+        "_upstream_supports_flattened_device_query_lens": lambda: pytest.fail(
+            "CUDA probe"
+        ),
     }
     assert function(PATCH, "_supports_varlen_paged_mqa_logits", namespace)() == (
         varlen and available
     )
-    assert function(PATCH, "_supports_flattened_device_query_lens", namespace)() == available
+    assert (
+        function(PATCH, "_supports_flattened_device_query_lens", namespace)()
+        == available
+    )
 
 
 @pytest.mark.parametrize(

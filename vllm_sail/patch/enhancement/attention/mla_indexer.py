@@ -305,7 +305,8 @@ _upstream_uses_fp4 = _indexer_module.dsa_indexer_uses_fp4
     "dsa_indexer_uses_fp4",
     reason=(
         "PPU MXFP4 indexer support is supplied by SAIL DeepGEMM, not CUDA "
-        "SM100, and sm_89 defaults indexer_kv_dtype to mxfp4."
+        "SM100. On sm_89, only V4/V4.1 have MXFP4 producers and default "
+        "indexer_kv_dtype to mxfp4."
     ),
     affected_versions=_AFFECTED,
     remove_when="The indexer exposes a platform capability hook.",
@@ -315,18 +316,28 @@ def dsa_indexer_uses_fp4(vllm_config):
 
     if not current_platform.is_ppu():
         return _upstream_uses_fp4(vllm_config)
-    # PPU MODIFICATION: begin -- sm_89 (ZW-890P) defaults to the MXFP4 indexer
+    # PPU MODIFICATION: begin -- only V4/V4.1 have MXFP4 query/cache producers.
+    model_config = vllm_config.model_config
+    hf_config = model_config.hf_text_config
+    supports_fp4 = hf_config.model_type in (
+        "deepseek_v4", "deepseek_v41", "deepseek_v41_text"
+    )
+    # sm_89 (Zhenwu M890) defaults these models to the MXFP4 indexer
     # cache. It halves the per-token K cache (132B -> 68B) and keeps the whole
     # indexer on the upstream Triton MXFP4 route instead of the INT8 quantising
     # kernels that only exist for PPU 1.0. Upstream's fp8 default is kept on
     # every other capability, where mxfp4 is rejected just below.
-    default_kv_dtype = "mxfp4" if current_platform.is_device_capability(89) else "fp8"
+    default_kv_dtype = (
+        "mxfp4" if supports_fp4 and current_platform.is_device_capability(89) else "fp8"
+    )
     # PPU MODIFICATION: end
     kv_dtype = vllm_config.attention_config.resolve_indexer_kv_dtype(default_kv_dtype)
     if kv_dtype not in _indexer_module.DSA_INDEXER_KV_DTYPES:
         raise ValueError(f"Unsupported PPU indexer_kv_dtype={kv_dtype!r}")
     if kv_dtype == "mxfp4" and not current_platform.is_device_capability(89):
         raise ValueError("PPU indexer_kv_dtype='mxfp4' requires capability sm_89")
+    if kv_dtype == "mxfp4" and not supports_fp4:
+        raise ValueError("PPU indexer_kv_dtype='mxfp4' requires DeepSeek V4 or V4.1")
     return kv_dtype == "mxfp4"
 
 
@@ -336,6 +347,7 @@ import sys
 for _consumer_name in (
     "vllm.model_executor.models.deepseek_v2",
     "vllm.models.deepseek_v4.attention",
+    "vllm.models.deepseek_v41.attention",
 ):
     _consumer = sys.modules.get(_consumer_name)
     if (
@@ -363,13 +375,16 @@ def _builder_init_wrapper(self, *args, **kwargs) -> None:
 
     if not current_platform.is_ppu():
         return
-    hf_config = self.vllm_config.model_config.hf_config
+    hf_config = self.vllm_config.model_config.hf_text_config
     self.indexer_n_head = getattr(self.kv_cache_spec, "indexer_n_head", 0) or getattr(
         hf_config, "index_n_heads", 0
     )
     self.indexer_q_head_dim = getattr(
         self.kv_cache_spec, "indexer_q_head_dim", 0
     ) or getattr(hf_config, "index_head_dim", 0)
+    if (getattr(hf_config, "index_kpool", 1) or 1) > 1:
+        # GLM-5-Next zero-pads its queries and weights to at least 32 heads.
+        self.indexer_n_head = max(32, self.indexer_n_head)
     from vllm_sail.utils.deep_gemm import get_num_sms
 
     self.num_sms = get_num_sms()

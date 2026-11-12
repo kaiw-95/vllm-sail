@@ -7,8 +7,8 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from tests.support.source import assert_accepts_upstream_keywords
 from tests.support.modules import load_patch
+from tests.support.source import assert_accepts_upstream_keywords
 
 PATCH = "vllm_sail/patch/enhancement/attention/mla_indexer.py"
 TARGET = "vllm.v1.attention.backends.mla.indexer"
@@ -23,7 +23,16 @@ class Tensor:
 
 @pytest.fixture
 def builder_factory(modules, patch_utils_module):
-    def make(*, ppu, fp4=True, n_head=64, q_head_dim=128, capability=89):
+    def make(
+        *,
+        ppu,
+        fp4=True,
+        n_head=64,
+        q_head_dim=128,
+        capability=89,
+        text_heads=32,
+        kpool=1,
+    ):
         calls = []
 
         class Builder:
@@ -39,9 +48,16 @@ def builder_factory(modules, patch_utils_module):
                 self.supports_varlen = provider._supports_varlen_paged_mqa_logits()
                 self.num_sms = 3
                 self.scheduler_metadata_buffer = NS(shape=("upstream",))
-                self.vllm_config = NS(model_config=NS(hf_config=NS(
-                    index_n_heads=32, index_head_dim=128,
-                )))
+                self.vllm_config = NS(
+                    model_config=NS(
+                        hf_config=NS(model_type="multimodal_wrapper"),
+                        hf_text_config=NS(
+                            index_n_heads=text_heads,
+                            index_head_dim=128,
+                            index_kpool=kpool,
+                        ),
+                    )
+                )
 
             @staticmethod
             def _split_indexer_prefill_chunks(*args, **kwargs):
@@ -150,6 +166,20 @@ def test_ppu_fp8_constructor_keeps_geometry_and_reserves_sail_schedule(builder_f
 
 def test_legacy_indexer_derives_missing_geometry_from_model_config(builder_factory):
     builder_cls, _ = builder_factory(ppu=True, fp4=False, n_head=None, q_head_dim=None)
+    builder = builder_cls("config")
+    assert builder.indexer_n_head == 32
+    assert builder.indexer_q_head_dim == 128
+
+
+def test_glm_kpool_metadata_matches_padded_query_heads(builder_factory):
+    builder_cls, _ = builder_factory(
+        ppu=True,
+        fp4=False,
+        n_head=None,
+        q_head_dim=None,
+        text_heads=16,
+        kpool=4,
+    )
     builder = builder_cls("config")
     assert builder.indexer_n_head == 32
     assert builder.indexer_q_head_dim == 128
