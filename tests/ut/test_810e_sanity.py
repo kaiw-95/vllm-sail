@@ -206,6 +206,41 @@ def test_completion_requires_a_final_answer_and_generated_tokens():
             sanity.validate_completion(response, "demo")
 
 
+@pytest.mark.parametrize("temperature", [None, 1.0])
+def test_model_temperature_preserves_request_budget_and_validation(
+    tmp_path, monkeypatch, external_launcher, temperature
+):
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    (checkpoint / "config.json").write_text("{}")
+    args = SimpleNamespace(
+        results_dir=tmp_path,
+        port=0,
+        ready_timeout=5,
+        request_timeout=5,
+        max_tokens=4096,
+    )
+    preset = {"key": "demo", "cards": 2, "args": []}
+    if temperature is not None:
+        preset["temperature"] = temperature
+    payloads = []
+
+    def request(url, *, payload=None, timeout=5):
+        if url.endswith("/health"):
+            return None
+        if url.endswith("/v1/models"):
+            return {"data": [{"id": "demo"}]}
+        payloads.append(payload)
+        return completion()
+
+    monkeypatch.setattr(sanity, "request_json", request)
+    result = sanity.run_preset(preset, checkpoint, args, 2)
+    assert result["status"] == "passed" and result["requests"] == 2
+    assert [p["temperature"] for p in payloads] == [temperature or 0] * 2
+    assert all(p["max_completion_tokens"] == 4096 and p["seed"] == 0 for p in payloads)
+    assert all(p["model"] == "demo" for p in payloads)
+
+
 def test_serve_preserves_json_and_checkpoint_arguments():
     presets = json.loads(sanity.CATALOG.read_text())
     assert len(presets) == 10
