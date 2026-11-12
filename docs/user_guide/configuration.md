@@ -82,16 +82,6 @@ quantization and checkpoint-name mappings. These source adaptations still need
 device, model-load and inference verification; see the
 [verification guide](verification_guide.md).
 
-The DeepGEMM API reference for these integrations is
-[`4869f1e3344a`](https://github.com/t-head/DeepGEMM-for-sail/commit/4869f1e3344a1b1888dc30d7a58e9c2ada2b3f88).
-Use a SAIL build providing that API. Its weighted MXFP4 indexer accepts BF16
-head weights and emits BF16 logits; it has no `logits_dtype` override. Prefill
-logit columns are query-relative. Paged DSA uses one query per row, including
-MTP, and MXFP4 metadata and compute receive the same real request IDs. These
-changes have not yet undergone build, device, model-load or inference
-verification; the upstream kernel references do not establish vLLM runtime
-support.
-
 ## Compatibility controls
 
 For FP8/BF16 conversion and recipe selection, see [Online quantization](online_quantization.md).
