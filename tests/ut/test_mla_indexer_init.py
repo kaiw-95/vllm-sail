@@ -53,6 +53,9 @@ def builder_factory(modules, patch_utils_module):
             def update_draft_decode_metadata(self, metadata):
                 return None
 
+            def _prepare_decode_tensors(self, *args, **kwargs):
+                return None
+
         modules(
             "torch",
             empty=lambda shape, **kwargs: Tensor(shape, **kwargs),
@@ -162,6 +165,12 @@ def test_subclass_constructs_through_the_parent_once(builder_factory):
             "_builder_init_wrapper",
             "v1/attention/backends/mla/indexer",
             "DeepseekV32IndexerMetadataBuilder.__init__",
+        ),
+        (
+            "attention/mla_indexer",
+            "_prepare_decode_wrapper",
+            "v1/attention/backends/mla/indexer",
+            "DeepseekV32IndexerMetadataBuilder._prepare_decode_tensors",
         ),
         (
             "attention/mla_indexer",

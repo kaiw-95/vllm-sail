@@ -31,6 +31,10 @@ helpers, new parameters, refactors) cannot break this plugin.
   the builder on ``_current_builder`` for the duration of the call so the
   static chunk splitter and the rebound paged-metadata helper can read the
   fork's fp4 capability. Upstream owns the whole step build.
+* ``_prepare_decode_tensors`` preserves MXFP4 query ownership from the
+  separate per-request counts. The prebuilt metadata call uses these IDs
+  instead of numbering already-flattened MTP queries as separate requests;
+  ``build`` clears the temporary IDs on both success and failure.
 * ``DeepseekV32IndexerMetadataBuilder.update_draft_decode_metadata`` (the MTP
   draft refresh) is the other call site that reaches the rebound helper, so it
   keeps the builder on ``_current_builder`` the same way; without it the fp4
@@ -137,9 +141,14 @@ def _ppu_paged_metadata(
         batch = context_lens.shape[0]
         next_n = context_lens.shape[1] if context_lens.ndim == 2 else 1
         if weighted_fp4 and indices is None:
-            indices = torch.arange(
-                batch, dtype=torch.int32, device=context_lens.device
-            ).repeat_interleave(next_n)
+            indices = getattr(builder, "_sail_decode_request_ids", None)
+            if indices is None:
+                # Draft refresh has one query per request. During build,
+                # _prepare_decode_tensors supplies the original ownership,
+                # including when upstream has flattened MTP into Q rows.
+                indices = torch.arange(
+                    batch, dtype=torch.int32, device=context_lens.device
+                ).repeat_interleave(next_n)
         context_lens = context_lens.reshape(-1, 1).contiguous()
         metadata_extra = (1, *metadata_extra[1:])
     # Legacy FP8/INT8 kernels do not accept request grouping. Their context
@@ -381,6 +390,75 @@ patch(
 
 
 _upstream_build = DeepseekV32IndexerMetadataBuilder.build
+_upstream_prepare_decode = DeepseekV32IndexerMetadataBuilder._prepare_decode_tensors
+
+
+def _decode_request_ids(context_lens, request_lens, flattened):
+    """Recover real request owners before upstream's flattened counts are lost."""
+    rows = context_lens.numel()
+    row = torch.arange(rows, device=context_lens.device, dtype=torch.int32)
+    if flattened:
+        ids = torch.searchsorted(request_lens.cumsum(0), row, right=True).to(torch.int32)
+        valid = ids < request_lens.numel()
+    else:
+        next_n = context_lens.shape[1] if context_lens.ndim == 2 else 1
+        ids = torch.arange(
+            request_lens.numel(), device=context_lens.device, dtype=torch.int32
+        ).repeat_interleave(next_n)
+        valid = row % next_n < request_lens.repeat_interleave(next_n)
+    return torch.where(valid, ids, -1 - row).contiguous()
+
+
+@patch(
+    _MODULE,
+    "DeepseekV32IndexerMetadataBuilder._prepare_decode_tensors",
+    reason=(
+        "SAIL MXFP4 prebuilt metadata needs real request ownership. Upstream's "
+        "non-varlen MTP preparation flattens queries and replaces decode_lens "
+        "with ones without publishing indices, so preserve ownership from the "
+        "separate per-request counts before the metadata call."
+    ),
+    affected_versions=_AFFECTED,
+    remove_when="The non-varlen indexer decode preparation publishes request IDs to metadata generation.",
+)
+def _prepare_decode_wrapper(
+    self,
+    seq_lens,
+    block_table,
+    decode_lens,
+    decode_lens_cpu,
+    query_start_loc,
+    num_decodes,
+    num_decode_tokens,
+    use_native,
+    next_n,
+    max_decode_len,
+):
+    result = _upstream_prepare_decode(
+        self,
+        seq_lens=seq_lens,
+        block_table=block_table,
+        decode_lens=decode_lens,
+        decode_lens_cpu=decode_lens_cpu,
+        query_start_loc=query_start_loc,
+        num_decodes=num_decodes,
+        num_decode_tokens=num_decode_tokens,
+        use_native=use_native,
+        next_n=next_n,
+        max_decode_len=max_decode_len,
+    )
+    from vllm.platforms import current_platform
+
+    if (
+        current_platform.is_ppu()
+        and self.indexer_uses_fp4
+        and _current_builder
+        and _current_builder[-1] is self
+    ):
+        self._sail_decode_request_ids = _decode_request_ids(
+            result[0], self.per_req_decode_lens_buffer[:num_decodes], not use_native
+        )
+    return result
 
 
 def _build_wrapper(
@@ -396,6 +474,7 @@ def _build_wrapper(
     block runs here and the rebound ``get_paged_mqa_logits_metadata`` adds the
     fork's ``metadata_extra`` itself.
     """
+    self._sail_decode_request_ids = None
     _current_builder.append(self)
     try:
         return _upstream_build(
@@ -403,6 +482,7 @@ def _build_wrapper(
         )
     finally:
         _current_builder.pop()
+        self._sail_decode_request_ids = None
 
 
 patch(
