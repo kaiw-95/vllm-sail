@@ -23,7 +23,7 @@ first read prints the forensic line consumed by the run ledger:
     [VLLM_SAIL] kv_mxfp8=True kv_bytes_per_token=528
 
 All upstream consumers call the function through the module global
-(v0.32.0 attention.py:512 layer init, :1217 kv-cache spec alignment), so
+(in the pinned v0.33.0 attention module during layer init and cache-spec alignment), so
 patching the module attribute covers every call site; no by-value alias
 rebind is needed.
 """
@@ -37,7 +37,7 @@ from vllm.platforms import current_platform
 import vllm_sail.envs as ppu_envs
 from vllm_sail.patch.utils import patch
 
-_AFFECTED = ">=0.32.0,<0.33.0"
+_AFFECTED = ">=0.33.0,<0.34.0"
 _MODULE = "vllm.models.deepseek_v41.attention"
 
 logger = init_logger(__name__)

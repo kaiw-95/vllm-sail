@@ -87,6 +87,10 @@ def installed(monkeypatch, patch_utils_module):
     platform.is_device_capability = lambda cap: cap == platform.capability
     module("vllm.platforms", current_platform=platform)
     module(
+        "vllm.logger",
+        init_logger=lambda name: types.SimpleNamespace(info_once=lambda *a, **k: None),
+    )
+    module(
         "torch",
         float32="fp32",
         uint8="uint8",
@@ -136,6 +140,15 @@ def installed(monkeypatch, patch_utils_module):
     nvidia = type("NvidiaAttention", (), {})
     ppu = type("PPUAttention", (), {})
     module(BASE + ".nvidia.flashmla", DeepseekV4FlashMLAAttention=nvidia)
+    module(
+        BASE + ".nvidia.flash_mla_mega_attn",
+        DeepseekV4MegaAttnAttention=type("NvidiaMegaAttention", (), {}),
+    )
+    module(
+        PLUGIN + ".flash_mla_mega_attn",
+        PPUDeepseekV4MegaAttnAttention=type("PPUMegaAttention", (), {}),
+        fused_gate=lambda config: (False, "INT8 baseline fixture"),
+    )
     sharing = types.SimpleNamespace(available=True, calls=[])
 
     def can_share(layout, block_size=32):
