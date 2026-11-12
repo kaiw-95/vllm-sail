@@ -121,9 +121,11 @@ def installed(monkeypatch, patch_utils_module):
         tokens_per_state: int = 2
         block_size: int = 256
         page_size_padded: int | None = 17280
+        block_stride_alignment: int | None = None
 
     class Cache:
         compress_ratio = 2
+        sparse_logits = False
         n_head = 64
         q_head_dim = 128
 
@@ -133,6 +135,7 @@ def installed(monkeypatch, patch_utils_module):
     class Indexer:
         def __init__(self, cache):
             self.k_cache, self.n_head, self.head_dim = cache, 64, 128
+            self.use_fp4_kv = False
 
     class Embedding:
         lookup = operation("lookup_upstream")
@@ -863,6 +866,7 @@ def sparse_indexer(installed):
     from tests.support.source import function
 
     state = installed
+    state.config.model_config.max_model_len = 32
     state.config.parallel_config = types.SimpleNamespace(
         decode_context_parallel_size=1,
         prefill_context_parallel_size=1,
@@ -936,6 +940,8 @@ def sparse_indexer(installed):
         candidate_blocks=None,
         candidate_block_size=0,
         candidate_write=False,
+        compress_ratio=1,
+        max_model_len=32,
     ):
         indexer = Indexer.__new__(Indexer)
         cache = types.SimpleNamespace(prefix="v41.indexer", kv_cache=object())
@@ -946,19 +952,50 @@ def sparse_indexer(installed):
             "scale",
             2,
             128,
-            32,
+            max_model_len,
             32,
             object(),
             use_fp4_cache=use_fp4_cache,
             candidate_blocks=candidate_blocks,
             candidate_block_size=candidate_block_size,
             candidate_write=candidate_write,
+            compress_ratio=compress_ratio,
         )
         return indexer
 
     return types.SimpleNamespace(
         construct=construct, calls=calls, namespace=namespace, warmups=warmups
     )
+
+
+@pytest.mark.parametrize("ppu", [False, True])
+@pytest.mark.parametrize("fp4_cache", [False, True])
+def test_dense_indexer_owns_the_ppu_weights_dtype(
+    installed, sparse_indexer, ppu, fp4_cache
+):
+    installed.platform.ppu = ppu
+    indexer = sparse_indexer.construct(use_fp4_cache=fp4_cache)
+    if ppu:
+        assert indexer.weights_dtype == ("bf16" if fp4_cache else "fp32")
+    else:
+        assert not hasattr(indexer, "weights_dtype")
+
+
+@pytest.mark.parametrize(
+    "runtime_len,ratio,caller_bound,expected",
+    [
+        (257, 2, 128, 129),
+        (256, 2, 128, 128),
+        (257, 1, 257, 257),
+        (257, 2, 144, 144),
+    ],
+)
+def test_sparse_indexer_window_uses_ceil_without_shrinking_explicit_bounds(
+    sparse_indexer, installed, runtime_len, ratio, caller_bound, expected
+):
+    installed.config.model_config.max_model_len = runtime_len
+    indexer = sparse_indexer.construct(compress_ratio=ratio, max_model_len=caller_bound)
+    assert indexer.max_model_len == expected
 
 
 @pytest.mark.parametrize("ppu,contract", [(True, True), (True, False), (False, True)])
@@ -1062,6 +1099,7 @@ def test_indexer_wrapper_forwards_inputs_to_custom_op(
             candidates,
             8,
             candidate_write,
+            indexer.topk_backend,
         )
     ]
 
