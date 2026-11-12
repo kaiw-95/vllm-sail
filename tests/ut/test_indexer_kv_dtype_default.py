@@ -50,6 +50,9 @@ def installed_indexer(modules, patch_utils_module):
             def update_draft_decode_metadata(self, metadata):
                 raise AssertionError("not refreshing draft metadata in dtype test")
 
+            def _prepare_decode_tensors(self, *args, **kwargs):
+                raise AssertionError("not preparing decode tensors in dtype test")
+
         def upstream(value):
             calls.append(value)
             return "upstream"

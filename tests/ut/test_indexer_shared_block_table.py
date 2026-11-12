@@ -78,20 +78,97 @@ def test_wrapper_delegates_with_the_builder_visible(modules):
     assert result is metadata
     assert seen == [[builder]]
     assert namespace["_current_builder"] == []
+    assert builder._sail_decode_request_ids is None
 
 
 def test_wrapper_pops_the_builder_when_upstream_raises(modules):
     namespace = {"_current_builder": []}
+    builder = NS()
 
     def upstream(*args):
+        builder._sail_decode_request_ids = "partial-build-ids"
         raise RuntimeError("upstream build failed")
 
     namespace["_upstream_build"] = upstream
 
     with pytest.raises(RuntimeError, match="upstream build failed"):
-        function(PATCH, "_build_wrapper", namespace)(NS(), 0, None)
+        function(PATCH, "_build_wrapper", namespace)(builder, 0, None)
 
     assert namespace["_current_builder"] == []
+    assert builder._sail_decode_request_ids is None
+
+
+def test_prebuilt_metadata_keeps_request_ids_after_upstream_flattens(modules):
+    builder = NS(
+        indexer_uses_fp4=True,
+        indexer_n_head=32,
+        indexer_q_head_dim=128,
+        per_req_decode_lens_buffer=[3, 1, 2],
+    )
+    namespace, calls, _ = _paged_namespace(modules, ppu=True, builder=builder)
+    namespace["_current_builder"] = []
+    prepared = Span()
+    prepared.shape = (6, 1)
+    expected_ids = [0, 0, 0, 1, 2, 2]
+    overwritten_lens = [3, 1, 2]
+
+    def upstream_prepare(self, **kwargs):
+        assert kwargs["num_decodes"] == 3
+        kwargs["decode_lens"][:] = [1] * 6
+        return prepared, object(), overwritten_lens, 6, False
+
+    def request_ids(contexts, lengths, flattened):
+        assert contexts is prepared and lengths == [3, 1, 2] and flattened
+        return expected_ids
+
+    namespace.update(
+        _upstream_prepare_decode=upstream_prepare,
+        _decode_request_ids=request_ids,
+    )
+    prepare = function(PATCH, "_prepare_decode_wrapper", namespace)
+    paged = function(PATCH, "_ppu_paged_metadata", namespace)
+
+    def upstream_build(self, *args):
+        prepare(
+            self,
+            Span(),
+            object(),
+            overwritten_lens,
+            object(),
+            object(),
+            3,
+            6,
+            False,
+            3,
+            3,
+        )
+        assert overwritten_lens == [1] * 6
+        return paged(prepared, 64, 7)
+
+    namespace["_upstream_build"] = upstream_build
+    assert function(PATCH, "_build_wrapper", namespace)(builder, 0, None) == "ppu-metadata"
+    assert calls == [(prepared, 64, 7, (1, 32, 128, "int8"), expected_ids)]
+    assert builder._sail_decode_request_ids is None
+
+
+@pytest.mark.parametrize(
+    "shape,lengths,flattened,expected",
+    [
+        ((6, 1), [3, 1, 2], True, [0, 0, 0, 1, 2, 2]),
+        ((4, 1), [2, 2], True, [0, 0, 1, 1]),
+        ((8, 1), [3, 1, 2, 0], True, [0, 0, 0, 1, 2, 2, -7, -8]),
+        ((3, 2), [2, 1, 0], False, [0, 0, 1, -4, -5, -6]),
+    ],
+)
+def test_prebuilt_request_ids_follow_query_ownership(shape, lengths, flattened, expected):
+    torch = pytest.importorskip("torch")
+    ids = function(PATCH, "_decode_request_ids", {"torch": torch})(
+        torch.empty(shape, dtype=torch.int32),
+        torch.tensor(lengths, dtype=torch.int32),
+        flattened,
+    )
+    assert ids.tolist() == expected
+    assert ids.dtype == torch.int32 and ids.is_contiguous()
 
 
 def test_draft_refresh_wrapper_keeps_the_builder_visible():
