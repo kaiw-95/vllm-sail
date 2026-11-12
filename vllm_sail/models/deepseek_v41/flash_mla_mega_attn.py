@@ -17,17 +17,21 @@ through ``flash_mla_cuda``). This module mirrors the upstream layer for PPU:
   packed-UE8M0 scale layout on both sides; ``copy_`` is element-correct even
   when the per-chunk aligned strides differ);
 * ``backend_cls`` stays ``FLASHMLA_SPARSE_DSV41`` (identical metadata and KV
-  geometry per upstream's own note) and ``packed_kv_cache_dtype`` stays
-  ``fp8_ds_mla`` — PPU has no ``nvfp4_ds_mla`` compressed record; the fused
-  decode kernel reads the 528B V4.1 fp8 record for both caches (enabled by
-  the ``dsv41_kv_record`` patch);
+  geometry per upstream's own note) and ``packed_kv_cache_dtype`` defaults to
+  ``fp8_ds_mla``: the fused decode kernel reads the 528B V4.1 MXFP8 record for
+  both caches (enabled by the ``dsv41_kv_record`` patch). Opt-in
+  ``VLLM_SAIL_PPU_KV_NVFP4=1`` resolves it to ``nvfp4_ds_mla`` instead, which
+  keeps the 528B SWA record and stores only the *compressed* cache as 288B
+  NVFP4 — the kernel accepts 288B for ``extra_k_cache`` alone and hard-checks
+  528B for the main cache;
 * capability gate mirrors the kernel's own hard check: PPU and
   ``(major, minor) in {(8, 0), (8, 9)}`` (PR#54
   csrc/api/fused_norm_rope_attn_rope_cast_fwd.cpp ``TORCH_CHECK``); arch
   subdivision (89 vs 80) and fast/generic path selection stay inside the C++
-  dispatch;
+  dispatch. The NVFP4 record additionally requires 8.9 (ZW-M890P) and
+  ``sliding_window % 8 == 0``;
 * forensic ``info_once`` lines on the first real decode/prefill kernel call
-  (ledger level L3): s_q / h_q / topk / extra_topk / kv_bytes.
+  (ledger level L3): s_q / h_q / topk / extra_topk / kv_bytes / extra_kv_bytes.
 
 v1.1 (wo_a layout fix, approved 2026-11-08): on PPU the MXFP8 bmm kernel
 selection can only land on ``EmulationMxfp8LinearKernel`` (the DeepGEMM bmm
@@ -72,9 +76,10 @@ weight-shape assertion below fails loudly printing n_local_groups /
 n_wv_group / weight.shape / data.shape — never a silent 1-group slice.
 
 Selection is gated by ``fused_gate`` (env switch, KV-record switch, platform,
-capability, wheel capability probe, V4.1 head/group topology); the selector
-patch in ``vllm_sail/patch/enhancement/models/deepseek_v41.py`` logs which
-gate closed when the class is not chosen.
+capability, the opt-in NVFP4 capability/top-k checks, wheel capability probe,
+V4.1 head/group topology); the selector patch in
+``vllm_sail/patch/enhancement/models/deepseek_v41.py`` logs which gate closed
+when the class is not chosen.
 """
 
 from __future__ import annotations
@@ -164,7 +169,7 @@ def fused_gate(vllm_config) -> tuple[bool, str]:
     """Whether the PPU fused norm-rope path may serve this configuration.
 
     Returns ``(ok, report)``; ``report`` names the closing gate so the
-    selector can log exactly which of the two env switches, the wheel, the
+    selector can log exactly which of the env switches, the wheel, the
     capability or the topology declined. Order: cheap env/platform checks
     first, wheel import probe last.
     """
@@ -175,11 +180,22 @@ def fused_gate(vllm_config) -> tuple[bool, str]:
             "gate-kvrecord: VLLM_SAIL_PPU_KV_MXFP8=0 selects the 584B V4 "
             "record; the fused decode kernel only reads the 528B V4.1 record"
         )
+    # Opt-in NVFP4 *compressed* record. The MXFP8 requirement above already
+    # covers the SWA side: the kernel hard-checks 528B for the main cache and
+    # only accepts 288B for extra_k_cache.
+    nvfp4 = ppu_envs.VLLM_SAIL_PPU_KV_NVFP4
     if not current_platform.is_ppu():
         return False, "gate-platform: not PPU"
     cap = current_platform.get_device_capability()
     if cap is None or (cap.major, cap.minor) not in _PPU_FUSED_CAPABILITIES:
         return False, f"gate-cap: capability {cap} not in {_PPU_FUSED_CAPABILITIES}"
+    if nvfp4 and (cap.major, cap.minor) != (8, 9):
+        return False, (
+            f"gate-nvfp4-cap: VLLM_SAIL_PPU_KV_NVFP4=1 needs capability 8.9 "
+            f"(ZW-M890P), got {cap.major}.{cap.minor}; the 288B NVFP4 record is "
+            f"written with the e2m1 PTX conversion, which SAIL supports on 8.9 "
+            f"only"
+        )
     if importlib.util.find_spec("flash_mla") is None:
         return False, "gate-wheel: flash_mla not installed"
     try:
@@ -218,10 +234,24 @@ def fused_gate(vllm_config) -> tuple[bool, str]:
             f"WV_GROUP_SIZE={WV_GROUP_SIZE} (need local_heads % 8 == 0 and "
             f"exactly 8 heads per wo_a group)"
         )
+    if nvfp4:
+        # The decode main-cache topk is the SWA width, i.e. sliding_window
+        # (vllm v1/attention/backends/mla/sparse_swa.py:480,512). FlashMLA's
+        # FP4 extra-cache cases require topk % 8 == 0 (FlashMLA-for-sail
+        # tests/fused_norm_rope_attn_rope_cast/
+        # test-fused-norm-rope-attn-rope-cast.py:497).
+        window = getattr(config, "sliding_window", 0) or 0
+        if window % 8:
+            return False, (
+                f"gate-nvfp4-topk: sliding_window={window} is not a multiple "
+                f"of 8; the fused decode kernel's FP4 extra-cache path "
+                f"requires topk % 8 == 0"
+            )
     return True, (
         f"all gates open: cap={cap.major}.{cap.minor} tp={tp_size} "
         f"local_heads={n_local_heads} padded_heads="
-        f"{64 if n_local_heads <= 64 else 128}"
+        f"{64 if n_local_heads <= 64 else 128} "
+        f"compressed_kv={'nvfp4_288B' if nvfp4 else 'mxfp8_528B'}"
     )
 
 
@@ -230,8 +260,12 @@ class PPUDeepseekV4MegaAttnAttention(DeepseekV4MegaAttnAttention):
 
     # Same metadata / KV geometry as FLASHMLA_SPARSE_DSV41 (upstream note on
     # FlashMLAMegaAttnBackend); avoids the SM100-only mega backend whose
-    # supports_compute_capability requires major == 10 and whose dtype list
-    # would resolve --kv-cache-dtype auto to nvfp4_ds_mla.
+    # supports_compute_capability requires major == 10. Its declared
+    # supported_kv_cache_dtypes omits nvfp4_ds_mla, but this custom layer hands
+    # the class straight to the runner (attention.py get_attn_backend), which
+    # groups by full_cls_name and never consults that list; get_invalid_reasons
+    # is only called by the ROCm platform. fused_gate is therefore the
+    # authoritative guard for the opt-in NVFP4 compressed record below.
     backend_cls = DeepseekV4FlashMLABackend
 
     def __init__(self, *args, **kwargs) -> None:
@@ -243,6 +277,17 @@ class PPUDeepseekV4MegaAttnAttention(DeepseekV4MegaAttnAttention):
         # baseline V4.1 class hardcodes).
         self._einsum_recipe = _PPU_EINSUM_RECIPE
         self._tma_aligned_scales = False
+        if ppu_envs.VLLM_SAIL_PPU_KV_NVFP4:
+            logger.warning_once(
+                "[vllm_sail] NVFP4 compressed KV opted in (288B instead of "
+                "528B): the record is lossy and its PPU write/gather Triton "
+                "kernels are not device-verified yet. The mixed widths also "
+                "raise the SWA packed block-stride alignment to "
+                "lcm(528,288)=3168, which can make the H64 packed decode fast "
+                "path ineligible (it requires stride_kv_s_kv == "
+                "page_block_size*528). Re-measure accuracy and decode latency "
+                "against the 528B arm."
+            )
 
     @classmethod
     def is_available_for(cls, vllm_config) -> bool:
@@ -250,8 +295,15 @@ class PPUDeepseekV4MegaAttnAttention(DeepseekV4MegaAttnAttention):
 
     @property
     def packed_kv_cache_dtype(self):
-        # PPU has no NVFP4 compressed record; both the SWA and the compressed
-        # cache keep the 528B V4.1 fp8 record the fused decode kernel reads.
+        # Default: both the SWA and the compressed cache keep the 528B V4.1
+        # MXFP8 record the fused decode kernel reads. Opt-in
+        # VLLM_SAIL_PPU_KV_NVFP4=1 resolves an unspecific --kv-cache-dtype to
+        # nvfp4_ds_mla, which keeps that SWA record and stores the compressed
+        # cache as 288B NVFP4 (upstream models/deepseek_v41/attention.py:
+        # compressed_bytes_per_token). The kernel accepts 288B only for
+        # extra_k_cache, never for the main cache, so the SWA side is unchanged.
+        if ppu_envs.VLLM_SAIL_PPU_KV_NVFP4:
+            return "nvfp4_ds_mla"
         return "fp8_ds_mla"
 
     # ---- output projection (v1.1, PPU emulation reality) -------------------
@@ -400,7 +452,12 @@ class PPUDeepseekV4MegaAttnAttention(DeepseekV4MegaAttnAttention):
         swa_metadata,
         out,
     ) -> None:
-        """Fused decode over the paged 528B records, copied into ``out``."""
+        """Fused decode over the paged records, copied into ``out``.
+
+        The SWA cache is always the 528B V4.1 MXFP8 record; the compressed
+        (extra) cache is 528B by default and 288B NVFP4 when
+        ``VLLM_SAIL_PPU_KV_NVFP4`` is opted in.
+        """
         # Upstream v0.32.0 cast positions to int32 inside forward_mqa; vllm
         # main (8b10bda) dropped that cast and forwards the runner's int64
         # buffer. The PPU kernel enforces int32 (KU_CHECK_DTYPE), so cast
@@ -412,15 +469,31 @@ class PPUDeepseekV4MegaAttnAttention(DeepseekV4MegaAttnAttention):
         assert swa_metadata.decode_swa_indices is not None
         swa_kv_cache = self.swa_cache_layer.kv_cache
         indices = swa_metadata.decode_swa_indices.view(q.shape[0], -1)
+        extra_bytes = 0 if extra_cache is None else extra_cache.shape[-1]
         logger.info_once(
             "[vllm_sail] fused norm-rope DECODE invoked: s_q=%d h_q=%d "
-            "topk=%d extra_topk=%d kv_bytes=%d",
+            "topk=%d extra_topk=%d kv_bytes=%d extra_kv_bytes=%d",
             q.shape[0],
             q.shape[1],
             indices.shape[-1],
             0 if extra_idx is None else extra_idx.shape[-1],
             swa_kv_cache.shape[-1],
+            extra_bytes,
         )
+        if extra_cache is not None:
+            # The kernel reads either record for extra_k_cache, so a mismatch
+            # is not fatal — but it must never pass unnoticed: an explicit
+            # --kv-cache-dtype overrides the switch's resolution.
+            expected = 288 if ppu_envs.VLLM_SAIL_PPU_KV_NVFP4 else 528
+            if extra_bytes != expected:
+                logger.warning_once(
+                    "[vllm_sail] compressed KV record is %dB but "
+                    "VLLM_SAIL_PPU_KV_NVFP4=%d asks for %dB; serving the "
+                    "resolved record. Check --kv-cache-dtype.",
+                    extra_bytes,
+                    int(ppu_envs.VLLM_SAIL_PPU_KV_NVFP4),
+                    expected,
+                )
         out_fp8, out_sf, _lse = _fused_api().decode(
             enable_q_norm=False,  # V4.1 norms qr before wq_b
             rms_norm_eps=0.0,

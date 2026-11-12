@@ -4,12 +4,13 @@
 CPU-only tier: no torch, no vLLM, no device. Covers the three pieces of
 PR#229 that are decidable without a kernel:
 
-* ``vllm_sail.envs`` parsing of the two new switches
-  (``VLLM_SAIL_FUSED_NORM_ROPE_ATTN`` / ``VLLM_SAIL_PPU_KV_MXFP8``)
-  including their auto-derived ``VLLM_PPU_*`` aliases and SAIL precedence;
+* ``vllm_sail.envs`` parsing of the three new switches
+  (``VLLM_SAIL_FUSED_NORM_ROPE_ATTN`` / ``VLLM_SAIL_PPU_KV_MXFP8`` /
+  ``VLLM_SAIL_PPU_KV_NVFP4``) including their auto-derived ``VLLM_PPU_*``
+  aliases and SAIL precedence;
 * ``fused_gate`` in ``vllm_sail/models/deepseek_v41/flash_mla_mega_attn.py``:
-  every gate branch (env, kv-record, platform, capability, wheel probe,
-  topology) and the fully-open report;
+  every gate branch (env, kv-record, platform, capability, the opt-in NVFP4
+  capability/top-k checks, wheel probe, topology) and the fully-open report;
 * the ``dsv41_kv_record`` patch module: non-PPU delegation, once-per-process
   env caching, the forensic log line, and the patch metadata (target,
   affected_versions against the repo's SUPPORTED_RANGE);
@@ -39,6 +40,8 @@ _SWITCH_NAMES = (
     "VLLM_PPU_FUSED_NORM_ROPE_ATTN",
     "VLLM_SAIL_PPU_KV_MXFP8",
     "VLLM_PPU_PPU_KV_MXFP8",
+    "VLLM_SAIL_PPU_KV_NVFP4",
+    "VLLM_PPU_PPU_KV_NVFP4",
 )
 
 
@@ -48,8 +51,17 @@ def _clean_switch_env(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(name, raising=False)
 
 
-def _config(heads: int = 64, groups: int = 8, tp: int = 8, *, nested: bool = False):
+def _config(
+    heads: int = 64,
+    groups: int = 8,
+    tp: int = 8,
+    *,
+    nested: bool = False,
+    sliding_window: int | None = None,
+):
     hf = SimpleNamespace(num_attention_heads=heads, o_groups=groups)
+    if sliding_window is not None:
+        hf.sliding_window = sliding_window
     if nested:
         hf = SimpleNamespace(text_config=hf, num_attention_heads=None, o_groups=None)
     return SimpleNamespace(
@@ -67,9 +79,11 @@ def test_new_switches_default_off() -> None:
     """Opt-in contract: unconfigured processes keep the baseline path."""
     assert envs.VLLM_SAIL_FUSED_NORM_ROPE_ATTN is False
     assert envs.VLLM_SAIL_PPU_KV_MXFP8 is False
+    assert envs.VLLM_SAIL_PPU_KV_NVFP4 is False
     snapshot = envs.snapshot()
     assert snapshot["VLLM_SAIL_FUSED_NORM_ROPE_ATTN"] is False
     assert snapshot["VLLM_SAIL_PPU_KV_MXFP8"] is False
+    assert snapshot["VLLM_SAIL_PPU_KV_NVFP4"] is False
 
 
 @pytest.mark.parametrize(
@@ -77,6 +91,7 @@ def test_new_switches_default_off() -> None:
     [
         ("VLLM_SAIL_FUSED_NORM_ROPE_ATTN", "VLLM_PPU_FUSED_NORM_ROPE_ATTN"),
         ("VLLM_SAIL_PPU_KV_MXFP8", "VLLM_PPU_PPU_KV_MXFP8"),
+        ("VLLM_SAIL_PPU_KV_NVFP4", "VLLM_PPU_PPU_KV_NVFP4"),
     ],
 )
 def test_switches_turn_on_via_either_name(
@@ -95,6 +110,7 @@ def test_switches_turn_on_via_either_name(
     [
         ("VLLM_SAIL_FUSED_NORM_ROPE_ATTN", "VLLM_PPU_FUSED_NORM_ROPE_ATTN"),
         ("VLLM_SAIL_PPU_KV_MXFP8", "VLLM_PPU_PPU_KV_MXFP8"),
+        ("VLLM_SAIL_PPU_KV_NVFP4", "VLLM_PPU_PPU_KV_NVFP4"),
     ],
 )
 def test_sail_name_takes_precedence_over_ppu_alias(
@@ -116,7 +132,11 @@ def test_sail_name_takes_precedence_over_ppu_alias(
 @pytest.fixture
 def gate(modules, monkeypatch):
     logs = []
-    logger = SimpleNamespace(info_once=lambda msg, *a: logs.append((msg, a)))
+    warnings = []
+    logger = SimpleNamespace(
+        info_once=lambda msg, *a: logs.append((msg, a)),
+        warning_once=lambda msg, *a: warnings.append((msg, a)),
+    )
     modules("torch")
     modules("vllm.logger", init_logger=lambda name: logger)
     modules(
@@ -208,6 +228,7 @@ def gate(modules, monkeypatch):
         module=module,
         platform=platform,
         logs=logs,
+        warnings=warnings,
         set_capability=set_capability,
         set_wheel=set_wheel,
         monkeypatch=monkeypatch,
@@ -319,6 +340,163 @@ def test_gate_reads_nested_text_config(gate) -> None:
     ok, report = gate.module.fused_gate(_config(nested=True))
     assert ok
     assert "local_heads=8" in report
+
+
+# ---------------------------------------------------------------------------
+# opt-in NVFP4 compressed record (VLLM_SAIL_PPU_KV_NVFP4)
+# ---------------------------------------------------------------------------
+
+
+def test_gate_nvfp4_off_by_default_keeps_mxfp8_record(gate) -> None:
+    gate.set_wheel("api")
+    ok, report = gate.module.fused_gate(_config(sliding_window=128))
+    assert ok
+    assert "compressed_kv=mxfp8_528B" in report
+    assert gate.warnings == []
+
+
+@pytest.mark.parametrize("cap", [(8, 0), (8, 9)])
+def test_gate_nvfp4_requires_capability_89(gate, cap) -> None:
+    """The 288B record is written with the e2m1 PTX conversion (8.9 only)."""
+    gate.monkeypatch.setenv("VLLM_SAIL_PPU_KV_NVFP4", "1")
+    gate.set_capability(SimpleNamespace(major=cap[0], minor=cap[1]))
+    gate.set_wheel("api")
+    ok, report = gate.module.fused_gate(_config(sliding_window=128))
+    if cap == (8, 9):
+        assert ok
+        assert "compressed_kv=nvfp4_288B" in report
+    else:
+        assert not ok
+        assert report.startswith("gate-nvfp4-cap:")
+        assert "8.9" in report
+
+
+def test_gate_nvfp4_still_requires_the_mxfp8_swa_record(gate) -> None:
+    """gate-kvrecord closes first: the main cache must stay 528B."""
+    gate.monkeypatch.setenv("VLLM_SAIL_PPU_KV_NVFP4", "1")
+    gate.monkeypatch.setenv("VLLM_SAIL_PPU_KV_MXFP8", "0")
+    gate.set_wheel("api")
+    ok, report = gate.module.fused_gate(_config(sliding_window=128))
+    assert not ok
+    assert report.startswith("gate-kvrecord:")
+
+
+@pytest.mark.parametrize("window", [8, 64, 128, 2048])
+def test_gate_nvfp4_accepts_topk_multiple_of_8(gate, window) -> None:
+    gate.monkeypatch.setenv("VLLM_SAIL_PPU_KV_NVFP4", "1")
+    gate.set_wheel("api")
+    ok, report = gate.module.fused_gate(_config(sliding_window=window))
+    assert ok
+    assert "compressed_kv=nvfp4_288B" in report
+
+
+@pytest.mark.parametrize("window", [1, 12, 130, 2050])
+def test_gate_nvfp4_rejects_topk_not_multiple_of_8(gate, window) -> None:
+    gate.monkeypatch.setenv("VLLM_SAIL_PPU_KV_NVFP4", "1")
+    gate.set_wheel("api")
+    ok, report = gate.module.fused_gate(_config(sliding_window=window))
+    assert not ok
+    assert report.startswith("gate-nvfp4-topk:")
+    assert f"sliding_window={window}" in report
+
+
+def test_gate_nvfp4_topk_check_reads_nested_text_config(gate) -> None:
+    gate.monkeypatch.setenv("VLLM_SAIL_PPU_KV_NVFP4", "1")
+    gate.set_wheel("api")
+    ok, report = gate.module.fused_gate(_config(nested=True, sliding_window=130))
+    assert not ok
+    assert report.startswith("gate-nvfp4-topk:")
+
+
+def test_gate_nvfp4_absent_window_does_not_close(gate) -> None:
+    """Configs without sliding_window keep the pre-existing gate behaviour."""
+    gate.monkeypatch.setenv("VLLM_SAIL_PPU_KV_NVFP4", "1")
+    gate.set_wheel("api")
+    ok, _ = gate.module.fused_gate(_config())
+    assert ok
+
+
+def test_gate_nvfp4_topk_check_is_opt_in(gate) -> None:
+    """Without the switch an odd window must not close the fused path."""
+    gate.set_wheel("api")
+    ok, report = gate.module.fused_gate(_config(sliding_window=130))
+    assert ok
+    assert "compressed_kv=mxfp8_528B" in report
+
+
+def test_packed_kv_cache_dtype_follows_nvfp4_switch(gate) -> None:
+    cls = gate.module.PPUDeepseekV4MegaAttnAttention
+    instance = cls()
+    assert instance.packed_kv_cache_dtype == "fp8_ds_mla"
+    gate.monkeypatch.setenv("VLLM_SAIL_PPU_KV_NVFP4", "1")
+    assert instance.packed_kv_cache_dtype == "nvfp4_ds_mla"
+    gate.monkeypatch.delenv("VLLM_SAIL_PPU_KV_NVFP4")
+    gate.monkeypatch.setenv("VLLM_PPU_PPU_KV_NVFP4", "1")
+    assert instance.packed_kv_cache_dtype == "nvfp4_ds_mla"
+    gate.monkeypatch.setenv("VLLM_SAIL_PPU_KV_NVFP4", "0")
+    assert instance.packed_kv_cache_dtype == "fp8_ds_mla"
+
+
+def test_nvfp4_opt_in_warns_about_accuracy_and_block_stride(gate) -> None:
+    cls = gate.module.PPUDeepseekV4MegaAttnAttention
+    cls()
+    assert gate.warnings == []
+    gate.monkeypatch.setenv("VLLM_SAIL_PPU_KV_NVFP4", "1")
+    cls()
+    assert len(gate.warnings) == 1
+    msg = gate.warnings[0][0]
+    assert "288B" in msg and "528B" in msg
+    assert "lcm(528,288)=3168" in msg
+    assert "accuracy" in msg
+
+
+def test_backend_cls_unchanged_by_nvfp4_switch(gate) -> None:
+    """The record switch must not swap the backend (metadata/KV geometry)."""
+    cls = gate.module.PPUDeepseekV4MegaAttnAttention
+    assert cls.backend_cls is gate.module.DeepseekV4FlashMLABackend
+    gate.monkeypatch.setenv("VLLM_SAIL_PPU_KV_NVFP4", "1")
+    assert cls.backend_cls is gate.module.DeepseekV4FlashMLABackend
+
+
+def test_decode_forensics_and_record_guard_are_wired() -> None:
+    """Source-level regression: the ledger must show the live extra record.
+
+    The decode body needs torch, so assert the wiring statically instead of
+    executing it (same pattern as the int32 cast regression below).
+    """
+    import ast
+
+    from tests.support.source import ROOT
+
+    source = (ROOT / "vllm_sail/models/deepseek_v41/flash_mla_mega_attn.py").read_text()
+    tree = ast.parse(source)
+    cls = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ClassDef)
+        and node.name == "PPUDeepseekV4MegaAttnAttention"
+    )
+    decode = next(
+        node
+        for node in cls.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_forward_decode_mega"
+    )
+    body = ast.get_source_segment(source, decode) or ""
+    assert "extra_kv_bytes=%d" in body, (
+        "decode lost the extra_kv_bytes forensic field; the run ledger can no "
+        "longer prove whether the 288B NVFP4 or the 528B MXFP8 record was live"
+    )
+    assert "VLLM_SAIL_PPU_KV_NVFP4" in body, (
+        "decode lost the compressed-record consistency guard"
+    )
+    prop = next(
+        node
+        for node in cls.body
+        if isinstance(node, ast.FunctionDef) and node.name == "packed_kv_cache_dtype"
+    )
+    prop_body = ast.get_source_segment(source, prop) or ""
+    assert '"nvfp4_ds_mla"' in prop_body and '"fp8_ds_mla"' in prop_body
+    assert "VLLM_SAIL_PPU_KV_NVFP4" in prop_body
 
 
 def test_ppu_class_contract(gate) -> None:
