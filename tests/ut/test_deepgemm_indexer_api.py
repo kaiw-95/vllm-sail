@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""SAIL DeepGEMM indexer API regression coverage; not yet executed."""
+"""SAIL DeepGEMM indexer API regression coverage."""
 
 from types import SimpleNamespace as NS
 
