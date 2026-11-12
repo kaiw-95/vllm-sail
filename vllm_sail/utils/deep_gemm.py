@@ -765,43 +765,25 @@ def fp8_fp4_mqa_logits(
     clean_logits: bool,
     logits_dtype: torch.dtype | None = None,
 ) -> torch.Tensor:
-    """Compute MQA logits for a single sequence without KV paging.
+    """Weighted MXFP4 API at DeepGEMM-for-sail 4869f1e3344a.
 
-    Unified FP8/FP4 dispatch — the underlying DeepGEMM kernel takes
-    ``q = (values, scales_or_None)`` where ``scales`` is None for FP8 Q
-    (per-token scale is folded into ``weights``) and a packed block-scale
-    tensor for MXFP4 Q.
-
-    Args:
-        q: Tuple ``(q_values, q_scale)``. FP8 path: q_values is [M, H, D]
-            float8_e4m3fn and q_scale is None (per-token scale is folded
-            into ``weights``). FP4 path: q_values is packed uint8 and
-            q_scale is the companion block-scale tensor.
-        kv: Tuple `(k_packed, k_scales)` — FP8 layout is [N, D]
-            float8_e4m3fn plus fp32 scales [N]; FP4 layout is packed uint8.
-        weights: weights of shape [M, H], dtype `torch.float32`.
-        cu_seqlen_ks: Start indices (inclusive) for valid K per query
-            position, shape [M], dtype int32.
-        cu_seqlen_ke: End indices (exclusive) for valid K per query
-            position, shape [M], dtype int32.
-        clean_logits: Whether to clean the unfilled logits into `-inf`.
-
-    Returns:
-        Logits tensor of shape [M, N], dtype `torch.float32`.
+    Returns BF16 logits with columns relative to each query's K start.
+    ``kv.shape[0]`` is a host-known capacity bound, avoiding a device sync.
+    Legacy FP8 uses ``fp8_mqa_logits`` instead. The retained compatibility
+    arguments must not request cleaning or an unsupported output dtype.
     """
+    if clean_logits or logits_dtype not in (None, torch.bfloat16):
+        raise ValueError("SAIL weighted MXFP4 emits BF16 logits with unfilled tails")
     _lazy_init()
     if _fp8_fp4_mqa_logits_impl is None:
         return _missing()
-    if logits_dtype is None:
-        logits_dtype = torch.float32
     return _fp8_fp4_mqa_logits_impl(
         q,
         kv,
-        weights,
+        weights.to(torch.bfloat16).contiguous(),
         cu_seqlen_ks,
         cu_seqlen_ke,
-        clean_logits=clean_logits,
-        logits_dtype=logits_dtype,
+        max_seqlen_k=kv[0].shape[0],
     )
 
 
@@ -810,6 +792,7 @@ def get_paged_mqa_logits_metadata(
     block_size: int,
     num_sms: int,
     metadata_extra: tuple | None,
+    indices: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Build scheduling metadata for paged MQA logits.
 
@@ -829,6 +812,8 @@ def get_paged_mqa_logits_metadata(
     kwargs = {}
     if metadata_extra is not None:
         kwargs["metadata_extra"] = metadata_extra
+    if indices is not None:
+        kwargs["indices"] = indices
     return _get_paged_mqa_logits_metadata_impl(
         context_lens,
         block_size,
@@ -940,50 +925,29 @@ def fp8_fp4_paged_mqa_logits(
     max_model_len: int,
     clean_logits: bool,
     logits_dtype: torch.dtype | None = None,
+    *,
+    indices: torch.Tensor,
 ) -> torch.Tensor:
-    """Compute MQA logits using a paged KV-cache.
+    """Weighted MXFP4 paged logits, BF16 [Q, max_model_len].
 
-    Unified FP8/FP4 dispatch — the underlying DeepGEMM kernel takes
-    ``q = (values, scales_or_None)``; pass ``(q_tensor, None)`` for the FP8
-    path and ``(q_values, q_scale)`` for MXFP4.
-
-    Args:
-        q: Tuple ``(q_values, q_scale)``. FP8 path: q_values is
-            [B, next_n, H, D] float8_e4m3fn and q_scale is None. FP4 path:
-            q_values is packed uint8 and q_scale is the companion
-            block-scale tensor.
-        kv_cache: Paged KV-cache. FP8 layout is [num_blocks, block_size, 1,
-            D+4], dtype `torch.uint8`, with the last 4 bytes per (block, pos)
-            storing the float dequant scale.
-        weights: Tensor of shape [B * next_n, H], dtype `torch.float32`.
-        context_lens: Tensor of shape [B], dtype int32; effective context length
-            for each batch element.
-        block_tables: Tensor of shape [B, max_blocks], dtype int32; maps logical
-            block indices to physical blocks in the paged cache.
-        schedule_metadata: Returned by `get_paged_mqa_logits_metadata`;
-            used to distribute work across SMs.
-        max_model_len: Maximum sequence length used to size the logits output.
-        clean_logits: Whether to clean the unfilled logits into `-inf`.
-
-    Returns:
-        Logits tensor of shape [B * next_n, max_model_len], dtype
-        `torch.float32`.
+    Q/scales/context/table are per-query with next_n=1. ``indices`` contains
+    real request ownership, shared with metadata generation, including MTP.
+    See DeepGEMM-for-sail 4869f1e3344a docs/api/indexer.md.
     """
+    if clean_logits or logits_dtype not in (None, torch.bfloat16):
+        raise ValueError("SAIL weighted MXFP4 emits BF16 logits with unfilled tails")
     _lazy_init()
     if _fp8_fp4_paged_mqa_logits_impl is None:
         return _missing()
-    if logits_dtype is None:
-        logits_dtype = torch.float32
     return _fp8_fp4_paged_mqa_logits_impl(
         q,
         kv_cache,
-        weights,
+        weights.to(torch.bfloat16).contiguous(),
         context_lens,
         block_tables,
         schedule_metadata,
         max_model_len,
-        clean_logits=clean_logits,
-        logits_dtype=logits_dtype,
+        indices=indices,
     )
 
 
