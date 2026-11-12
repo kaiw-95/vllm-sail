@@ -34,6 +34,7 @@
     "key": "qwen3.5-35b_bf16_tp2",
     "checkpoint": "LLM/qwen/v3.5/Qwen3.5-35B-A3B",
     "cards": 2,
+    "temperature": 1.0,
     "args": ["--dtype", "bfloat16", "--tensor-parallel-size", "2", "--no-enable-prefix-caching"]
   },
   {

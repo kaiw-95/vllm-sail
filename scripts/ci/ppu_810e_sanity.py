@@ -269,7 +269,7 @@ def run_preset(preset: dict, checkpoint: Path, args, available_cards: int) -> di
                             ),
                         }
                     ],
-                    "temperature": 0,
+                    "temperature": preset.get("temperature", 0),
                     "seed": 0,
                     "max_completion_tokens": args.max_tokens,
                 }
