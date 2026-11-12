@@ -279,6 +279,10 @@ def ppu_sparse_attn_indexer(
         for chunk in prefill_metadata.chunks:
             k_quant = k_quant_full[: chunk.total_seq_lens]
             k_scale = k_scale_full[: chunk.total_seq_lens]
+            # Both host-known bounds cover every row's valid K window. Cap
+            # short batches too, so a large configured context cannot inflate
+            # a small chunk's allocation beyond its gathered KV extent.
+            logits_capacity = min(max_model_len, chunk.total_seq_lens)
 
             if not chunk.skip_kv_gather:
                 ops.cp_gather_indexer_k_quant_cache(
@@ -316,7 +320,7 @@ def ppu_sparse_attn_indexer(
                         chunk.cu_seqlen_ke,
                         clean_logits=False,
                         logits_dtype=torch.bfloat16,
-                        max_seqlen_k=max_model_len,
+                        max_seqlen_k=logits_capacity,
                     )
                 elif q_dtype == torch.int8:
                     logits = int8_mqa_logits(
@@ -326,7 +330,7 @@ def ppu_sparse_attn_indexer(
                         chunk.cu_seqlen_ks,
                         chunk.cu_seqlen_ke,
                         clean_logits=False,
-                        max_seqlen_k=max_model_len,
+                        max_seqlen_k=logits_capacity,
                     )
                 elif q_dtype == torch.float8_e4m3fn:
                     logits = fp8_mqa_logits(
@@ -336,7 +340,7 @@ def ppu_sparse_attn_indexer(
                         chunk.cu_seqlen_ks,
                         chunk.cu_seqlen_ke,
                         clean_logits=False,
-                        max_seqlen_k=max_model_len,
+                        max_seqlen_k=logits_capacity,
                     )
                 else:
                     raise RuntimeError(

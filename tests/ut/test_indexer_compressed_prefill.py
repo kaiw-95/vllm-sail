@@ -11,7 +11,10 @@ INDEXER = "vllm_sail/attention/ops/mla_sparse.py"
 
 
 @pytest.mark.parametrize("policy", ["mxfp4", "int8", "fp8"])
-def test_prefill_passes_window_bound_and_masks_relative_columns(policy):
+@pytest.mark.parametrize("model_bound,capacity", [(7, 7), (300, 205)])
+def test_prefill_passes_window_bound_and_masks_relative_columns(
+    policy, model_bound, capacity
+):
     torch = pytest.importorskip("torch")
     if not hasattr(torch, "float8_e4m3fn"):
         pytest.skip("optional torch lacks FP8 dtype")
@@ -36,13 +39,15 @@ def test_prefill_passes_window_bound_and_masks_relative_columns(policy):
         calls.append(kwargs)
         assert passed_weights.data_ptr() == weights.data_ptr()
         assert starts.tolist() == [0, 100] and ends.tolist() == [3, 105]
-        logits = torch.arange(7).expand(2, -1).clone()
+        logits = torch.arange(capacity).expand(2, -1).clone()
         return logits.to(torch.bfloat16 if fp4 else torch.float32)
 
     def topk(logits, starts, ends, out, *args):
-        assert logits.shape == (2, 7)
+        assert logits.shape == (2, capacity)
         assert starts.tolist() == [0, 0] and ends.tolist() == [3, 5]
-        masked = logits.masked_fill(torch.arange(7)[None, :] >= ends[:, None], -float("inf"))
+        masked = logits.masked_fill(
+            torch.arange(capacity)[None, :] >= ends[:, None], -float("inf")
+        )
         out.copy_(masked.topk(2, dim=-1).indices)
 
     def filter_candidates(logits, starts, ends, *args):
@@ -79,11 +84,11 @@ def test_prefill_passes_window_bound_and_masks_relative_columns(policy):
         torch.empty((2, 1)), "cache", None,
         torch.empty((2, 32, 64 if fp4 else 128), dtype=q_dtype),
         torch.empty((2, 32), dtype=torch.int32) if fp4 else None,
-        None, weights, 128, "ue8m0", 2, 128, 7, 205, out, True,
+        None, weights, 128, "ue8m0", 2, 128, model_bound, 205, out, True,
         use_fp4_cache=fp4, candidate_blocks=torch.empty((2, 1)),
         candidate_block_size=64,
     )
     assert result is out
-    assert calls[0]["max_seqlen_k"] == 7
+    assert calls[0]["max_seqlen_k"] == capacity
     assert masks == [([0, 0], [3, 5])]
     assert out.tolist() == [[2, 1], [4, 3]]
