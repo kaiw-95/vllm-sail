@@ -18,6 +18,12 @@ from vllm.v1.attention.backends.mla.indexer import (
 from vllm.v1.attention.ops.common import pack_seq_triton, unpack_seq_triton
 from vllm.v1.worker.workspace import current_workspace_manager
 
+from vllm_sail.utils.deep_select import (
+    can_use_deep_select,
+    deep_select_topk,
+    warn_deep_select_fallback,
+)
+
 if current_platform.is_cuda_alike():
     from vllm import _custom_ops as ops
 
@@ -176,6 +182,7 @@ def ppu_sparse_attn_indexer(
     candidate_blocks: torch.Tensor | None = None,
     candidate_block_size: int = 0,
     candidate_write: bool = False,
+    topk_backend: str = "auto",
 ) -> torch.Tensor:
     # careful! this will be None in dummy run
     attn_metadata = get_forward_context().attn_metadata
@@ -222,6 +229,7 @@ def ppu_sparse_attn_indexer(
             candidate_blocks,
             candidate_block_size,
             candidate_write,
+            topk_backend,
         )
     attn_metadata_narrowed = attn_metadata[k_cache_prefix]
     assert isinstance(attn_metadata_narrowed, DeepseekV32IndexerMetadata)
@@ -363,7 +371,13 @@ def ppu_sparse_attn_indexer(
                 chunk.token_start : chunk.token_end, :topk_tokens
             ]
 
-            if logits.dtype == torch.bfloat16:
+            if _use_deep_select(logits, topk_tokens, topk_backend):
+                # BF16 weighted logits are already query-relative; other
+                # prefill formats retain their existing packed-row kernels.
+                assert use_fp4_cache
+                deep_select_topk(logits, topk_tokens, row_ends, topk_indices)
+            elif logits.dtype == torch.bfloat16:
+                warn_deep_select_fallback()
                 sail_ops.top_k_per_row_prefill_bf16(
                     logits,
                     row_starts,
@@ -540,10 +554,14 @@ def ppu_sparse_attn_indexer(
                 )
         topk_indices = topk_indices_buffer[:num_padded_tokens, :topk_tokens]
 
-        if topk_tokens in (512, 1024, 2048):
+        if _use_deep_select(logits, topk_tokens, topk_backend):
+            row_ends = seq_lens.reshape(-1)
+            deep_select_topk(logits, topk_tokens, row_ends, topk_indices)
+        elif topk_tokens in (512, 1024, 2048):
             # The existing decode kernels consume FP32 only. This expansion
             # preserves BF16 scores exactly and never rounds FP32 into BF16.
             if logits.dtype == torch.bfloat16:
+                warn_deep_select_fallback()
                 logits = logits.float()
             workspace_manager = current_workspace_manager()
             (topk_workspace,) = workspace_manager.get_simultaneous(
@@ -559,6 +577,7 @@ def ppu_sparse_attn_indexer(
             )
         else:
             if logits.dtype == torch.bfloat16:
+                warn_deep_select_fallback()
                 logits = logits.float()
             torch.ops._C.top_k_per_row_decode(
                 logits,
@@ -605,8 +624,19 @@ def ppu_sparse_attn_indexer_fake(
     candidate_blocks: torch.Tensor | None = None,
     candidate_block_size: int = 0,
     candidate_write: bool = False,
+    topk_backend: str = "auto",
 ) -> torch.Tensor:
     return topk_indices_buffer
+
+
+def _use_deep_select(logits, topk, backend):
+    supported = can_use_deep_select(logits, topk)
+    if backend == "deep_select" and not supported:
+        raise RuntimeError(
+            "deep_select was requested but the SAIL BF16 wheel, device or "
+            "shape is unsupported; FP32 logits are never rounded to BF16"
+        )
+    return backend in ("auto", "deep_select") and supported
 
 
 def _paged_decode_rows(

@@ -82,6 +82,16 @@ quantization and checkpoint-name mappings. These source adaptations still need
 device, model-load and inference verification; see the
 [verification guide](verification_guide.md).
 
+V4.1 sparse indexers can use the precompiled SAIL DeepSelect wheel on Zhenwu
+M890 (`ZW-M890P`, PPU capability 8.9). `VLLM_SAIL_USE_DEEPSELECT=1` (default)
+selects it automatically for compatible BF16 logits when the indexer top-k
+backend is `auto`; `--kernel-config sparse_indexer_topk_backend=deep_select`
+requires it explicitly. Set `VLLM_SAIL_USE_DEEPSELECT=0` to retain the existing
+top-k. The wheel must provide `deep_select.interface.topk` and
+`get_stride_requirement`. FP32 logits stay on FP32 kernels; they are never
+rounded to fit the BF16 wheel. Missing wheels and unsupported automatic cases
+fall back; an explicit `deep_select` request fails with its unmet requirements.
+
 The DeepGEMM API reference for these integrations is
 [`4869f1e3344a`](https://github.com/t-head/DeepGEMM-for-sail/commit/4869f1e3344a1b1888dc30d7a58e9c2ada2b3f88).
 Use a SAIL build providing that API. Its weighted MXFP4 indexer accepts BF16

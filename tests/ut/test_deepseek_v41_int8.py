@@ -1005,6 +1005,7 @@ def test_indexer_wrapper_forwards_inputs_to_custom_op(
             candidates,
             8,
             candidate_write,
+            indexer.topk_backend,
         )
     ]
 
