@@ -500,6 +500,54 @@ def test_apply_vllm_mapper_remaps_channelwise_on_ppu(
     _Platform.ppu = True
 
 
+@pytest.mark.parametrize("ppu", [True, False])
+def test_apply_vllm_mapper_remaps_ignored_layers_on_every_platform(
+    monkeypatch: pytest.MonkeyPatch, mxfp4_module, ppu: bool
+) -> None:
+    monkeypatch.setitem(sys.modules, "torch", types.ModuleType("torch"))
+    _, modules = _build_stub_vllm(monkeypatch)
+    mxfp4_module.install()
+    Mxfp4Config = modules["quant_mxfp4"].Mxfp4Config
+    RoutedExperts = modules["fused_moe"].RoutedExperts
+
+    class Mapper:
+        @staticmethod
+        def apply_list(layers):
+            return [
+                name.replace("model.language_model.", "language_model.model.")
+                for name in layers
+            ]
+
+    monkeypatch.setattr(_Platform, "ppu", ppu)
+    prefix = "language_model.model.layers.1.mlp.experts"
+    config = Mxfp4Config(
+        ignored_layers=["model.language_model.layers.1.mlp.experts", "lm_head"]
+    )
+    config.apply_vllm_mapper(Mapper())
+    assert config.ignored_layers == [prefix, "lm_head"]
+    method = config.get_quant_method(RoutedExperts(), prefix)
+    assert isinstance(method, modules["fused_moe"].UnquantizedFusedMoEMethod)
+
+
+@pytest.mark.parametrize("ignored", [None, []])
+def test_apply_vllm_mapper_tolerates_an_absent_ignore_list(
+    monkeypatch: pytest.MonkeyPatch, mxfp4_module, ignored
+) -> None:
+    monkeypatch.setitem(sys.modules, "torch", types.ModuleType("torch"))
+    _, modules = _build_stub_vllm(monkeypatch)
+    mxfp4_module.install()
+    Mxfp4Config = modules["quant_mxfp4"].Mxfp4Config
+
+    class Mapper:
+        @staticmethod
+        def apply_list(layers):
+            raise AssertionError("called with no list to map")
+
+    config = Mxfp4Config(ignored_layers=ignored)
+    config.apply_vllm_mapper(Mapper())
+    assert config.ignored_layers == ignored
+
+
 def test_method_initialization_preserves_upstream_factory(
     monkeypatch: pytest.MonkeyPatch, mxfp4_module
 ) -> None:

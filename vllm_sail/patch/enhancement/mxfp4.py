@@ -12,7 +12,7 @@ priority lists and activation keys are already covered by
   FP8 channelwise via a CompressedTensors scheme), reads ``ignore`` /
   ``fp8_channelwise_layers`` in ``from_config``, routes ignored ``RoutedExperts``
   to ``UnquantizedFusedMoEMethod`` (mixed-precision MTP blocks), and remaps the
-  channelwise list in ``apply_vllm_mapper``.
+  ignored and channelwise lists in ``apply_vllm_mapper``.
 * ``GptOssMxfp4MoEMethod`` / ``Mxfp4MoEMethod`` select W4A4
   (``kMxfp4Dynamic`` activations) on PPU sm90+, falling back to W4A16 on sm80.
 * ``Mxfp4MoEMethod.get_fused_moe_quant_config`` threads ``swiglu_alpha`` /
@@ -61,8 +61,9 @@ REASON_CONFIG = (
     "The fork adds fp8_channelwise_layers to Mxfp4Config (PPU dense layers "
     "quantized FP8 channelwise), reads 'ignore'/'fp8_channelwise_layers' in "
     "from_config, routes ignored RoutedExperts to UnquantizedFusedMoEMethod "
-    "for mixed-precision checkpoints, and remaps the list in "
-    "apply_vllm_mapper; upstream has none of this."
+    "for mixed-precision checkpoints, and remaps both lists in "
+    "apply_vllm_mapper -- upstream inherits the no-op base, so ignored_layers "
+    "keeps checkpoint naming and never matches a vLLM prefix."
 )
 REASON_METHOD_SELECT = (
     "PPU runs MXFP4 as W4A4 (mxfp4 activations) on sm90+ and W4A16 on sm80; "
@@ -81,8 +82,9 @@ REASON_ORACLE = (
 )
 REMOVE_WHEN = (
     "upstream grows first-class PPU MXFP4 support (fp8_channelwise_layers "
-    "config plumbing, W4A4 selection, and PPU branches in the MXFP4 oracle), "
-    "or the PPU MXFP4 flow is dropped."
+    "config plumbing, W4A4 selection, PPU branches in the MXFP4 oracle, and an "
+    "apply_vllm_mapper override that rewrites ignored_layers), or the PPU "
+    "flow is dropped."
 )
 
 METADATA = (
@@ -283,6 +285,11 @@ def install() -> None:
     )
     def _apply_vllm_mapper(self, hf_to_vllm_mapper) -> None:
         _upstream_apply_mapper(self, hf_to_vllm_mapper)
+        # Upstream inherits the no-op mapper, leaving checkpoint names that
+        # cannot match the vLLM prefixes used by ignored Linear and MoE layers.
+        if self.ignored_layers:
+            self.ignored_layers = hf_to_vllm_mapper.apply_list(self.ignored_layers)
+
         from vllm.platforms import current_platform
 
         if current_platform.is_ppu() and self.fp8_channelwise_layers:
