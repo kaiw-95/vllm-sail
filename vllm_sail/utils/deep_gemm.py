@@ -961,16 +961,19 @@ def bf16_mega_gate(
     weight: torch.Tensor,
     num_topk: int,
     *,
+    scoring_func: str,
     routed_scaling_factor: float,
+    ep_rank: int,
     bias: torch.Tensor | None = None,
     image_bias: torch.Tensor | None = None,
     image_token_mask: torch.Tensor | None = None,
-    mask: torch.Tensor | None = None,
+    fix_routing_mask: torch.Tensor | None = None,
+    unmapped_topk_idx: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Return global logical IDs in vLLM order: weights, then indices.
+    """Match vLLM's native MegaGate API and return weights before indices.
 
-    SAIL returns (int64 IDs, FP32 weights). Keep EPLB and any index conversion
-    in the vLLM runner; no library-side physical mapping or fused shared slot.
+    Native MegaMoE retains ownership of expert mapping, capture and reduction.
+    The supplied output buffers participate in graph capture as upstream does.
     """
     _lazy_init()
     if _bf16_mega_gate_impl is None:
@@ -986,12 +989,13 @@ def bf16_mega_gate(
         use_shared_as_routed=False,
         num_shared_experts=0,
         routed_scaling_factor=routed_scaling_factor,
-        ep_rank=0,
-        scoring_func="sqrtsoftplus",
+        ep_rank=ep_rank,
+        scoring_func=scoring_func,
         bias=bias,
         image_bias=image_bias,
         image_token_mask=image_token_mask,
-        mask=mask,
+        fix_routing_mask=fix_routing_mask,
+        unmapped_topk_idx=unmapped_topk_idx,
         out=(ids, weights),
     )
     return weights, ids
