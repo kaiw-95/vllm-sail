@@ -127,12 +127,23 @@ def test_preloaded_consumers_get_all_matching_replacements(
     assert p.get_deep_select_stride_requirement() == (512, 32)
     assert p.is_deep_select_supported(NS(dtype="bf16"), 64)
     assert not p.is_deep_select_supported(NS(dtype="fp32"), 64)
-    assert (
-        patch_utils_module.original_of(
-            p.deep_select_topk, PROVIDER + ".deep_select_topk"
+    assert installed.provider.SparseIndexerTopk.resolve_backend is p.resolve_backend
+    for module, name, replacement in (
+        (SPARSE, "has_deep_select", p.has_deep_select),
+        (PROVIDER, "get_deep_select_stride_requirement", p.get_deep_select_stride_requirement),
+        (PROVIDER, "is_deep_select_supported", p.is_deep_select_supported),
+        (PROVIDER, "deep_select_topk", p.deep_select_topk),
+        (PROVIDER, "SparseIndexerTopk.resolve_backend", p.resolve_backend),
+    ):
+        assert (
+            patch_utils_module.original_of(replacement, module + "." + name)
+            is installed.original
         )
-        is installed.original
-    )
+        with pytest.raises(RuntimeError, match="already"):
+            patch_utils_module.patch(
+                module, name, reason=p._REASON,
+                affected_versions=p._AFFECTED, remove_when=p._REMOVE_WHEN,
+            )(lambda *args: None)
     with pytest.raises(RuntimeError, match="already"):
         load_patch(PATCH)
 

@@ -95,7 +95,29 @@ def builder_factory(modules, patch_utils_module):
             "vllm_sail.patch.utils",
             patch_value=patch_utils_module.patch_value,
         )
-        load_patch(PATCH)
+        originals = {
+            name: getattr(provider, name)
+            for name in (
+                "_supports_varlen_paged_mqa_logits",
+                "_supports_flattened_device_query_lens",
+            )
+        }
+        installed = load_patch(PATCH)
+        for name, original in originals.items():
+            replacement = getattr(installed, name)
+            assert getattr(provider, name) is replacement
+            assert (
+                patch_utils_module.original_of(replacement, TARGET + "." + name)
+                is original
+            )
+            with pytest.raises(RuntimeError, match="already"):
+                patch_utils_module.patch(
+                    TARGET,
+                    name,
+                    reason="Reject a second query-layout override.",
+                    affected_versions=">=0.33.0,<0.34.0",
+                    remove_when="The platform exposes query-layout capabilities.",
+                )(lambda: False)
         return provider.DeepseekV32IndexerMetadataBuilder, calls
 
     return make
