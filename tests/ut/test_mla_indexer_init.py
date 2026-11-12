@@ -39,6 +39,9 @@ def builder_factory(modules, patch_utils_module):
                 self.supports_varlen = True
                 self.num_sms = 3
                 self.scheduler_metadata_buffer = NS(shape=("upstream",))
+                self.vllm_config = NS(model_config=NS(hf_config=NS(
+                    index_n_heads=32, index_head_dim=128,
+                )))
 
             @staticmethod
             def _split_indexer_prefill_chunks(*args, **kwargs):
@@ -108,15 +111,22 @@ def test_ppu_fp4_constructor_delegates_then_adds_fork_state(builder_factory):
     assert builder.scheduler_metadata_buffer.device == "ppu:0"
 
 
-def test_ppu_fp8_constructor_keeps_upstream_buffer(builder_factory):
+def test_ppu_fp8_constructor_keeps_geometry_and_reserves_sail_schedule(builder_factory):
     builder_cls, _ = builder_factory(ppu=True, fp4=False)
     builder = builder_cls("config")
 
     assert builder.supports_varlen is False
-    assert builder.indexer_n_head == 0
-    assert builder.indexer_q_head_dim == 0
+    assert builder.indexer_n_head == 64
+    assert builder.indexer_q_head_dim == 128
     assert builder.num_sms == 7
-    assert builder.scheduler_metadata_buffer.shape == ("upstream",)
+    assert builder.scheduler_metadata_buffer.shape == (7 * 8 + 1, 2)
+
+
+def test_legacy_indexer_derives_missing_geometry_from_model_config(builder_factory):
+    builder_cls, _ = builder_factory(ppu=True, fp4=False, n_head=None, q_head_dim=None)
+    builder = builder_cls("config")
+    assert builder.indexer_n_head == 32
+    assert builder.indexer_q_head_dim == 128
 
 
 def test_non_ppu_constructor_is_left_untouched(builder_factory):

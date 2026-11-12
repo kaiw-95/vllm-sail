@@ -21,6 +21,14 @@ class Row:
 
 class Span:
     shape = (3, 1)
+    ndim = 2
+    device = "cuda"
+
+    def reshape(self, *shape):
+        return self
+
+    def contiguous(self):
+        return self
 
     @staticmethod
     def dim():
@@ -32,7 +40,7 @@ def _paged_namespace(modules, *, ppu, builder=None):
     fallback = []
 
     def paged(context_lens, block_size, num_sms, metadata_extra=None, **kwargs):
-        calls.append((context_lens, block_size, num_sms, metadata_extra))
+        calls.append((context_lens, block_size, num_sms, metadata_extra, kwargs.get("indices")))
         return "ppu-metadata"
 
     def upstream(context_lens, block_size, num_sms, indices=None):
@@ -44,8 +52,13 @@ def _paged_namespace(modules, *, ppu, builder=None):
         "_upstream_paged_metadata": upstream,
         "_ppu_deep_gemm": NS(get_paged_mqa_logits_metadata=paged),
         "_indexer_module": NS(PPU_FP4_INDEXER_ELEMENT_SIZE=1),
+        "torch": NS(int8="int8", int32="int32"),
     }
-    modules("vllm.platforms", current_platform=NS(is_ppu=lambda: ppu))
+    modules("vllm.platforms", current_platform=NS(
+        is_ppu=lambda: ppu,
+        is_device_capability=lambda cap: cap == (8, 9),
+        fp8_dtype=lambda: "fp8",
+    ))
     return namespace, calls, fallback
 
 
@@ -101,35 +114,34 @@ def test_draft_refresh_wrapper_keeps_the_builder_visible():
     assert namespace["_current_builder"] == []
 
 
-def test_paged_metadata_derives_the_fp4_extra_from_the_builder(modules):
+def test_paged_metadata_derives_legacy_fp8_geometry_from_the_builder(modules):
     builder = NS(indexer_n_head=64, indexer_q_head_dim=128)
     namespace, calls, fallback = _paged_namespace(modules, ppu=True, builder=builder)
 
     result = function(PATCH, "_ppu_paged_metadata", namespace)(Span(), 64, 7)
 
     assert result == "ppu-metadata"
-    assert calls == [(ANY, 64, 7, (1, 64, 128, 1))]
+    assert calls == [(ANY, 64, 7, (1, 64, 128, "fp8"), None)]
     assert not fallback
 
 
-def test_paged_metadata_keeps_the_standard_layout_without_fp4_heads(modules):
+def test_paged_metadata_rejects_missing_query_geometry(modules):
     namespace, calls, fallback = _paged_namespace(modules, ppu=True)
     namespace["_current_builder"] = [NS(indexer_n_head=0, indexer_q_head_dim=128)]
 
-    function(PATCH, "_ppu_paged_metadata", namespace)(Span(), 64, 7)
-
-    assert calls[0][3] is None
+    with pytest.raises(ValueError, match="query head geometry"):
+        function(PATCH, "_ppu_paged_metadata", namespace)(Span(), 64, 7)
+    assert not calls
     assert not fallback
 
 
-def test_paged_metadata_rejects_varlen_indices_on_ppu(modules):
-    builder = NS(indexer_n_head=64, indexer_q_head_dim=128)
-    namespace, _, _ = _paged_namespace(modules, ppu=True, builder=builder)
-
-    with pytest.raises(NotImplementedError, match="fixed-length"):
-        function(PATCH, "_ppu_paged_metadata", namespace)(
-            Span(), 64, 7, indices=Span()
-        )
+@pytest.mark.parametrize("fp4,tag", [(True, "int8"), (False, "fp8")])
+def test_paged_metadata_groups_only_weighted_mxfp4_queries(modules, fp4, tag):
+    builder = NS(indexer_n_head=64, indexer_q_head_dim=128, indexer_uses_fp4=fp4)
+    namespace, calls, _ = _paged_namespace(modules, ppu=True, builder=builder)
+    ids = Span()
+    function(PATCH, "_ppu_paged_metadata", namespace)(Span(), 64, 7, indices=ids)
+    assert calls == [(ANY, 64, 7, (1, 64, 128, tag), ids if fp4 else None)]
 
 
 def test_paged_metadata_delegates_on_non_ppu(modules):
