@@ -97,7 +97,11 @@ def installed(monkeypatch, patch_utils_module):
         calls.append(("int8_k", args, kwargs))
         return "int8_k"
 
-    module(Q_PROVIDER, fused_indexer_q_rope_quant=upstream_q)
+    module(
+        Q_PROVIDER,
+        fused_indexer_q_rope_quant=upstream_q,
+        _indexer_weights_out_dtypes=lambda config: ("float32",),
+    )
     module(f"{BASE}.common.ops", fused_indexer_q_rope_quant=upstream_q)
     module(
         f"{BASE}.attention",
@@ -233,6 +237,32 @@ def test_int8_query_requires_float32_scoring_weights(installed):
             *range(6), weights_out_dtype="bfloat16"
         )
     assert not calls
+
+
+@pytest.mark.parametrize(
+    "ppu,capability,expected",
+    [
+        (True, (8, 9), ("float32", "bfloat16")),
+        (True, (8, 0), ("float32",)),
+        (False, (8, 9), ("float32",)),
+    ],
+)
+def test_fp4_warmup_includes_dense_ppu_weights_dtype(
+    installed, patch_utils_module, ppu, capability, expected
+):
+    platform, modules, _, patched = installed
+    platform.ppu, platform.capability = ppu, capability
+    helper = modules[Q_PROVIDER]._indexer_weights_out_dtypes
+    assert helper is patched._indexer_weights_out_dtypes
+    assert helper(object()) == expected
+    target = Q_PROVIDER + "._indexer_weights_out_dtypes"
+    assert patch_utils_module.original_of(helper, target)(None) == ("float32",)
+    with pytest.raises(RuntimeError, match="already"):
+        patch_utils_module.patch(
+            Q_PROVIDER, "_indexer_weights_out_dtypes",
+            reason="Duplicate warmup selection.", affected_versions=">=0.33.0,<0.34.0",
+            remove_when="The model selects the PPU weights dtype.",
+        )(lambda *args: None)
 
 
 @pytest.mark.parametrize("consumer", [K_PROVIDER, f"{BASE}.compressor"])
