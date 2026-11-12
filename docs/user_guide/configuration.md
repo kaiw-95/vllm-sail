@@ -82,6 +82,17 @@ quantization and checkpoint-name mappings. These source adaptations still need
 device, model-load and inference verification; see the
 [verification guide](verification_guide.md).
 
+`VLLM_SAIL_DEEPGEMM_MEGA_GATE=1` opts V4.1 into fused BF16 gate projection and
+sqrtsoftplus top-k through the modular MoE runner. It requires SAIL DeepGEMM's
+`bf16_mega_gate`, PPU capability 8.9+, normalized routing, contiguous BF16
+inputs and weights, hidden size divisible by 256, up to 512 experts (a multiple
+of four), top-k up to 32 and decode/verification batches of 1–2048 rows.
+Shared experts remain separate. Prefill, monolithic experts, fused shared
+slots, hash routing, batch-invariant mode, sequence parallelism, PCP, DBO and
+naive dispatch use the regular runner and log the fallback reason once.
+
+Requires SAIL DeepGEMM providing `bf16_mega_gate`, using [`4869f1e3344a`](https://github.com/t-head/DeepGEMM-for-sail/commit/4869f1e3344a1b1888dc30d7a58e9c2ada2b3f88) as the API reference. Build, device, model-load and inference verification remain pending.
+
 ## Compatibility controls
 
 For FP8/BF16 conversion and recipe selection, see [Online quantization](online_quantization.md).
