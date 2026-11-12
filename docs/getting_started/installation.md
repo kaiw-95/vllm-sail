@@ -152,6 +152,10 @@ also checks representative operation registrations. These checks do not execute
 a model; continue with the [quickstart](quickstart.md) and
 [device verification](../user_guide/verification_guide.md).
 
+On Zhenwu 810E, the platform defaults TileLang to its Cython execution backend
+so MHC participates in graph capture and recomputes its outputs on replay.
+An explicit `TILELANG_EXECUTION_BACKEND` value takes precedence over this default.
+
 ## Troubleshooting
 
 | Symptom | Next step |

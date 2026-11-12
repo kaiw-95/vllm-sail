@@ -19,6 +19,7 @@ Deliberately inherited from ``NvmlCudaPlatform`` (do not re-implement):
 
 from __future__ import annotations
 
+import os
 from functools import cache
 from typing import TYPE_CHECKING, NamedTuple
 
@@ -30,6 +31,7 @@ from vllm.v1.attention.backends.registry import AttentionBackendEnum
 
 if TYPE_CHECKING:
     from vllm.config import SpeculativeConfig, VllmConfig
+    from vllm.utils.argparse_utils import FlexibleArgumentParser
     from vllm.v1.attention.backend import AttentionBackend
     from vllm.v1.attention.selector import AttentionSelectorConfig
 
@@ -140,6 +142,17 @@ class PPUPlatform(NvmlCudaPlatform):
     ray_noset_device_env_vars: list[str] = [
         "RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES",
     ]
+
+    @classmethod
+    def pre_register_and_update(
+        cls, parser: FlexibleArgumentParser | None = None
+    ) -> None:
+        super().pre_register_and_update(parser)
+        if cls.is_device_capability((8, 0)):
+            # PPU TileLang's TVM FFI launcher can leave MHC outside the captured
+            # graph on 810E. Its Cython launcher preserves stream ordering and
+            # replays input changes correctly. Respect an explicit selection.
+            os.environ.setdefault("TILELANG_EXECUTION_BACKEND", "cython")
 
     @classmethod
     def is_ppu(cls) -> bool:
