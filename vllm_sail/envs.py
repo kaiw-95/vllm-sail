@@ -57,12 +57,16 @@ if TYPE_CHECKING:
     VLLM_SAIL_STEP5_DSA_PREFILL_BACKEND: str = "flashinfer"
     VLLM_SAIL_STEP5_DSA_PREFILL_BATCH_ATTENTION: bool = False
     VLLM_STEP5_INDEXER_FP8_AS_FP16: bool = False
+    VLLM_SAIL_MINIMAX_M3_MSA: bool = True
+    VLLM_SAIL_MINIMAX_M3_MSA_INDEXER_TRITON: bool = False
+    VLLM_SAIL_MINIMAX_M3_MSA_ATTEND_TRITON: bool = False
     VLLM_SAIL_NVTX_PROFILE: bool = False
     VLLM_SAIL_NVTX_DUMP_DICT: bool = False
     VLLM_SAIL_NVTX_DUMP_TOPK: bool = False
     VLLM_SAIL_NVTX_VFA_DUMP_SEQLEN: bool = False
     VLLM_SAIL_FUSED_NORM_ROPE_ATTN: bool = False
     VLLM_SAIL_PPU_KV_MXFP8: bool = False
+    VLLM_SAIL_PPU_KV_NVFP4: bool = False
     VLLM_DEEPEPLL_RECV_HOOK: bool = True
     VLLM_GDN_DECODE_KERNEL: str = "auto"
 
@@ -94,6 +98,7 @@ if TYPE_CHECKING:
     VLLM_PPU_NVTX_VFA_DUMP_SEQLEN: bool = False
     VLLM_PPU_FUSED_NORM_ROPE_ATTN: bool = False
     VLLM_PPU_PPU_KV_MXFP8: bool = False
+    VLLM_PPU_PPU_KV_NVFP4: bool = False
 
 _TRUTHY = ("true", "1", "yes", "on")
 
@@ -262,11 +267,11 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # default: upstream's kernel stays the reference until validated per model.
     "VLLM_SAIL_STEP5_DSA_SCORES": _bool("VLLM_SAIL_STEP5_DSA_SCORES", False),
     # per_row stays the default; the new selector is opt-in only.
-    "VLLM_SAIL_STEP5_DSA_SELECTOR_PPU": _bool("VLLM_SAIL_STEP5_DSA_SELECTOR_PPU", False),
-    # Selects native paged attention during prefill metadata planning.
-    "VLLM_SAIL_STEP5_DSA_PREFILL_PPU": _bool(
-        "VLLM_SAIL_STEP5_DSA_PREFILL_PPU", False
+    "VLLM_SAIL_STEP5_DSA_SELECTOR_PPU": _bool(
+        "VLLM_SAIL_STEP5_DSA_SELECTOR_PPU", False
     ),
+    # Selects native paged attention during prefill metadata planning.
+    "VLLM_SAIL_STEP5_DSA_PREFILL_PPU": _bool("VLLM_SAIL_STEP5_DSA_PREFILL_PPU", False),
     # Defaults to FlashInfer; native opts into the new prefill/decode and the old
     # v023 values raise.
     "VLLM_SAIL_STEP5_DSA_PREFILL_BACKEND": _choice(
@@ -281,6 +286,20 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # The FP16 summary cache takes twice the memory; keeps the Step5 fork's name.
     # Read lazily; set it before the server starts and keep it fixed at runtime.
     "VLLM_STEP5_INDEXER_FP8_AS_FP16": _bool("VLLM_STEP5_INDEXER_FP8_AS_FP16", False),
+    # -- MiniMax M3 SAIL MSA sparse attention -------------------------------
+    # Enabled by default: the SAIL path is selected whenever the platform, the
+    # model shape and the installed `msa_for_sail` allow it; the dtypes follow
+    # the platform and the KV cache dtype (see models/minimax_m3_msa/gating.py).
+    # 0 keeps the PPU Triton implementation for both halves.
+    "VLLM_SAIL_MINIMAX_M3_MSA": _bool("VLLM_SAIL_MINIMAX_M3_MSA", True),
+    # Bisection switches: keep one half on the PPU Triton implementation while
+    # the other half runs the SAIL kernels.
+    "VLLM_SAIL_MINIMAX_M3_MSA_INDEXER_TRITON": _bool(
+        "VLLM_SAIL_MINIMAX_M3_MSA_INDEXER_TRITON", False
+    ),
+    "VLLM_SAIL_MINIMAX_M3_MSA_ATTEND_TRITON": _bool(
+        "VLLM_SAIL_MINIMAX_M3_MSA_ATTEND_TRITON", False
+    ),
     # -- Attention / linear attention --------------------------------------
     # Legacy getter only. Current PLA/Triton dispatch uses VLLM_SAIL_USE_PLA.
     "VLLM_SAIL_FUSED_GDN_DECODE": _bool("VLLM_SAIL_FUSED_GDN_DECODE", True),
@@ -301,6 +320,15 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # Read once per process by the dsv41_kv_record patch, which also prints
     # the forensic line "[VLLM_SAIL] kv_mxfp8=<bool> kv_bytes_per_token=<n>".
     "VLLM_SAIL_PPU_KV_MXFP8": _bool("VLLM_SAIL_PPU_KV_MXFP8", False),
+    # Compressed-KV record for the fused V4.1 path: True -> 288B NVFP4 record
+    # (256B e2m1 + 32 per-16 e4m3 scales) for the *compressed* cache only, while
+    # the sliding-window cache keeps the 528B MXFP8 record the kernel requires.
+    # Default OFF (opt-in): both caches stay 528B MXFP8, byte-identical to the
+    # behaviour without this variable. Requires the master switch and
+    # VLLM_SAIL_PPU_KV_MXFP8=1, capability 8.9 (ZW-M890P; the e2m1 PTX conversion
+    # is unavailable on 8.0) and sliding_window % 8 == 0; the fused gate closes
+    # with a named reason otherwise. Lossy: accuracy must be re-measured.
+    "VLLM_SAIL_PPU_KV_NVFP4": _bool("VLLM_SAIL_PPU_KV_NVFP4", False),
     # -- Distributed MoE ---------------------------------------------------
     # DeepEP low-latency deferred recv hook. The hook only pays off on backends
     # that can overlap the deferred receive with other compute; setting this to

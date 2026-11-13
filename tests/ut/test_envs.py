@@ -37,8 +37,12 @@ BOOL_DEFAULTS = {
     "NVTX_DUMP_DICT": False,
     "NVTX_DUMP_TOPK": False,
     "NVTX_VFA_DUMP_SEQLEN": False,
+    "MINIMAX_M3_MSA": True,
+    "MINIMAX_M3_MSA_INDEXER_TRITON": False,
+    "MINIMAX_M3_MSA_ATTEND_TRITON": False,
     "FUSED_NORM_ROPE_ATTN": False,
     "PPU_KV_MXFP8": False,
+    "PPU_KV_NVFP4": False,
 }
 INT_DEFAULTS = {
     "KPOOL_MAX_DENSE_POOLS": 1 << 21,
@@ -92,8 +96,11 @@ def test_prefill_backend_lazy_choices_and_precedence(monkeypatch, prefix):
     sail = "VLLM_SAIL_STEP5_DSA_PREFILL_BACKEND"
     ppu = "VLLM_PPU_STEP5_DSA_PREFILL_BACKEND"
     assert getattr(envs, sail) == getattr(envs, ppu) == "flashinfer"
-    for raw, expected in (("NATIVE", "native"),
-                          ("FlashInfer", "flashinfer"), ("", "flashinfer")):
+    for raw, expected in (
+        ("NATIVE", "native"),
+        ("FlashInfer", "flashinfer"),
+        ("", "flashinfer"),
+    ):
         monkeypatch.setenv(prefix + "_STEP5_DSA_PREFILL_BACKEND", raw)
         assert getattr(envs, sail) == getattr(envs, ppu) == expected
     monkeypatch.setenv(prefix + "_STEP5_DSA_PREFILL_BACKEND", " V023 ")
@@ -108,13 +115,23 @@ def test_prefill_backend_lazy_choices_and_precedence(monkeypatch, prefix):
 
 
 @pytest.mark.parametrize("prefix", ["VLLM_SAIL", "VLLM_PPU"])
-@pytest.mark.parametrize("suffix", [
-    "STEP5_FUSED_NORM", "STEP5_DSA_SCORE_MQA", "STEP5_DSA_SCORE_MQA_BQ",
-    "STEP5_DSA_PREFILL_MULTI_QUERY", "STEP5_DSA_PREFILL_MULTI_QUERY_BQ",
-    "STEP5_DSA_SCORE_TILE", "STEP5_DSA_SCORE_WORKERS", "STEP5_DSA_SCORE_WARPS",
-    "STEP5_DSA_NATIVE_DEBUG", "STEP5_DSA_NATIVE_DEBUG_LIMIT",
-    "STEP5_DSA_PREFILL_CUDA", "STEP5_DSA_SELECTOR_V2",
-])
+@pytest.mark.parametrize(
+    "suffix",
+    [
+        "STEP5_FUSED_NORM",
+        "STEP5_DSA_SCORE_MQA",
+        "STEP5_DSA_SCORE_MQA_BQ",
+        "STEP5_DSA_PREFILL_MULTI_QUERY",
+        "STEP5_DSA_PREFILL_MULTI_QUERY_BQ",
+        "STEP5_DSA_SCORE_TILE",
+        "STEP5_DSA_SCORE_WORKERS",
+        "STEP5_DSA_SCORE_WARPS",
+        "STEP5_DSA_NATIVE_DEBUG",
+        "STEP5_DSA_NATIVE_DEBUG_LIMIT",
+        "STEP5_DSA_PREFILL_CUDA",
+        "STEP5_DSA_SELECTOR_V2",
+    ],
+)
 def test_removed_configuration_is_not_recognized(monkeypatch, prefix, suffix):
     name = prefix + "_" + suffix
     baseline = envs.snapshot()
@@ -261,8 +278,17 @@ def test_step5_fork_variable_keeps_its_name(
 
 @pytest.mark.parametrize(
     "raw,expected",
-    [("", False), ("false", False), ("no", False), ("off", False), ("0", False),
-     ("true", True), ("YES", True), (" On ", True), ("1", True)],
+    [
+        ("", False),
+        ("false", False),
+        ("no", False),
+        ("off", False),
+        ("0", False),
+        ("true", True),
+        ("YES", True),
+        (" On ", True),
+        ("1", True),
+    ],
 )
 def test_step5_indexer_switch_preserves_boolean_spelling(monkeypatch, raw, expected):
     monkeypatch.setenv("VLLM_STEP5_INDEXER_FP8_AS_FP16", raw)

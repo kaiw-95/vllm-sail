@@ -31,6 +31,7 @@ from tests.support.source import assert_accepts_upstream_keywords
 MODELS_PATCH_DIR = (
     pathlib.Path(__file__).parents[2] / "vllm_sail" / "patch" / "enhancement" / "models"
 )
+REPO_ROOT = pathlib.Path(__file__).parents[2]
 
 EXPECTED_MODULES = {
     "deepseek_mtp",
@@ -49,6 +50,7 @@ EXPECTED_MODULES = {
     "glm5_next_mtp",
     "kimi_k3",
     "llama4",
+    "minimax_m3_msa",
     "moe_marlin_gate",
     "qwen3_fused_quant",
     "qwen3_moe",
@@ -138,6 +140,66 @@ def test_every_patch_has_well_formed_metadata() -> None:
             remove_when = _string_value(keywords["remove_when"], constants)
             assert remove_when.strip().lower() != "todo", (
                 f"{path.name}: remove_when must be a verifiable condition"
+            )
+
+
+def _plugin_source(dotted: str) -> pathlib.Path | None:
+    """The file that defines plugin module ``dotted``, if it exists in-tree."""
+    path = REPO_ROOT.joinpath(*dotted.split("."))
+    for candidate in (path.with_suffix(".py"), path / "__init__.py"):
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _top_level_names(path: pathlib.Path) -> set[str]:
+    names: set[str] = set()
+    for node in ast.parse(path.read_text(), filename=str(path)).body:
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            names.add(node.name)
+        elif isinstance(node, ast.Assign | ast.AnnAssign):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            names.update(t.id for t in targets if isinstance(t, ast.Name))
+        elif isinstance(node, ast.Import | ast.ImportFrom):
+            names.update(
+                (alias.asname or alias.name).split(".")[0] for alias in node.names
+            )
+    return names
+
+
+def test_plugin_imports_and_targets_exist_in_tree() -> None:
+    """Every ``vllm_sail`` module a patch module imports or targets is in-tree.
+
+    The modules import their targets eagerly and ``install()`` has no fallback,
+    so a dangling plugin path breaks plugin load for every model on PPU. Only
+    a vLLM run would notice; this AST check catches it on a bare CPU.
+    """
+    for path in _patch_module_files():
+        tree = ast.parse(path.read_text(), filename=str(path))
+        constants = _module_constants(tree)
+        modules = {
+            _string_value(call.args[0], constants)
+            for call in _patch_calls(tree)
+            if call.args
+        }
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                modules.update(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+                modules.add(node.module)
+                source = _plugin_source(node.module)
+                if source is None or source.name == "__init__.py":
+                    continue
+                # A plain module has no submodules: every name must be defined.
+                missing = {alias.name for alias in node.names} - _top_level_names(
+                    source
+                )
+                assert not missing, (
+                    f"{path.name}: {node.module} defines no {sorted(missing)}"
+                )
+        for module in sorted(m for m in modules if m.startswith("vllm_sail.")):
+            assert _plugin_source(module) is not None, (
+                f"{path.name}: {module} does not exist in the source tree"
             )
 
 
@@ -263,10 +325,7 @@ _EXPECTED_TARGETS = {
         "vllm.models.step5.nvidia.flashinfer_sparse.Step5FlashInferSparse."
         "prefill_pair_inputs"
     ),
-    (
-        "vllm.models.step5.nvidia.flashinfer_sparse.Step5FlashInferSparse."
-        "select_regions"
-    ),
+    ("vllm.models.step5.nvidia.flashinfer_sparse.Step5FlashInferSparse.select_regions"),
     "vllm.models.step5.nvidia.layernorm.apply_step5_rms_norm",
     "vllm.models.step5.nvidia.layernorm.apply_step5_add_rms_norm",
     "vllm.models.step5.nvidia.ops.summary_update._store_summary",
@@ -473,7 +532,6 @@ def test_step5_pair_inputs_skip_flashinfer_schedule_on_ppu(
     from unittest import mock
 
     import torch
-
     from vllm.models.step5.nvidia.flashinfer_sparse import Step5FlashInferSparse
     from vllm.platforms import current_platform
 
@@ -502,9 +560,18 @@ def installed_step5_patches(monkeypatch):
     from vllm_sail.patch.utils import PATCH_REGISTRY
 
     for name, target in (
-        ("step5_soft_fp8", "vllm.models.step5.nvidia.ops.summary_update._store_summary"),
-        ("step5_dsa_backend", "vllm.models.step5.nvidia.flashinfer_sparse.Step5FlashInferSparse.__init__"),
-        ("step5_indexer_fp16", "vllm.models.step5.nvidia.ops.indexer_norm_rope.indexer_norm_rope"),
+        (
+            "step5_soft_fp8",
+            "vllm.models.step5.nvidia.ops.summary_update._store_summary",
+        ),
+        (
+            "step5_dsa_backend",
+            "vllm.models.step5.nvidia.flashinfer_sparse.Step5FlashInferSparse.__init__",
+        ),
+        (
+            "step5_indexer_fp16",
+            "vllm.models.step5.nvidia.ops.indexer_norm_rope.indexer_norm_rope",
+        ),
     ):
         if any(record.target == target for record in PATCH_REGISTRY):
             continue
@@ -523,7 +590,6 @@ def test_step5_summary_cache_dtype_follows_fp16_switch(
     from types import SimpleNamespace
 
     import torch
-
     from vllm.models.step5.nvidia.sparse_summary_cache import (
         Step5SparseSummaryCacheLayer,
     )
@@ -551,7 +617,6 @@ def test_step5_fp16_switch_selects_triton_scorer_off_ppu(
     from types import SimpleNamespace
 
     import torch
-
     from vllm.models.step5.nvidia.flashinfer_sparse import Step5FlashInferSparse
     from vllm.platforms import current_platform
 
@@ -598,8 +663,9 @@ def _load_step5_soft_bodies(names, namespace):
     path = MODELS_PATCH_DIR.parents[2] / "models/step5/ops/soft_fp8.py"
     tree = ast.parse(path.read_text(), filename=str(path))
     bodies = [
-        node for node in tree.body
-        if isinstance(node, (ast.FunctionDef, ast.ClassDef)) and node.name in names
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef | ast.ClassDef) and node.name in names
     ]
     assert {node.name for node in bodies} == set(names)
     for node in bodies:
@@ -620,7 +686,9 @@ def test_step5_store_value_modes_on_cpu(dtype):
     torch = pytest.importorskip("torch")
     namespace = dict(
         tl=SimpleNamespace(float16=torch.float16),
-        encode_e4m3=lambda x: x.clamp(-448, 448).to(torch.float8_e4m3fn).view(torch.uint8),
+        encode_e4m3=lambda x: x.clamp(-448, 448)
+        .to(torch.float8_e4m3fn)
+        .view(torch.uint8),
         e4m3_to_fp16=lambda x: x.view(torch.float8_e4m3fn).to(torch.float16),
     )
     _load_step5_soft_bodies(["_indexer_store_value"], namespace)
@@ -657,7 +725,8 @@ def test_step5_summary_quantizes_after_bf16_rounding_on_cpu():
 
     namespace = dict(
         tl=SimpleNamespace(
-            float16=torch.float16, bfloat16=torch.bfloat16,
+            float16=torch.float16,
+            bfloat16=torch.bfloat16,
             div_rn=lambda a, b: a / b,
             store=lambda pointer, values: output.__setitem__(pointer.offset, values),
         ),
@@ -671,9 +740,13 @@ def test_step5_summary_quantizes_after_bf16_rounding_on_cpu():
     namespace["_store_summary"](
         Pointer(), 23, torch.arange(256), numerator, denominator, 4096, 64
     )
-    ref = (numerator / denominator).bfloat16().clamp(-448, 448).to(
-        torch.float8_e4m3fn
-    ).half()
+    ref = (
+        (numerator / denominator)
+        .bfloat16()
+        .clamp(-448, 448)
+        .to(torch.float8_e4m3fn)
+        .half()
+    )
     assert torch.equal(output[512:768], ref)
     assert ref.abs().max() == 448
     assert torch.count_nonzero(output[:512]) == 0
@@ -706,14 +779,14 @@ def test_step5_kernel_launch_modes_are_lazy_on_cpu(monkeypatch, ppu, half):
             return lambda *args, **kw: (self.name, args, kw)
 
     namespace = dict(
-        torch=SimpleNamespace(Tensor=Tensor, float16="half", float8_e4m3fn="fp8",
-                              uint8="byte"),
-        current_platform=SimpleNamespace(is_ppu=lambda: ppu), envs=envs,
+        torch=SimpleNamespace(
+            Tensor=Tensor, float16="half", float8_e4m3fn="fp8", uint8="byte"
+        ),
+        current_platform=SimpleNamespace(is_ppu=lambda: ppu),
+        envs=envs,
     )
     _load_step5_soft_bodies(["indexer_fp16", "ByteFP8Launch"], namespace)
-    launch = namespace["ByteFP8Launch"](
-        Kernel("upstream"), Kernel("software"), (0,)
-    )
+    launch = namespace["ByteFP8Launch"](Kernel("upstream"), Kernel("software"), (0,))
     query, main_cache = Tensor("half" if half else "fp8"), Tensor("fp8")
     for mode in (0, 1, 0, 1):
         monkeypatch.setenv("VLLM_STEP5_INDEXER_FP8_AS_FP16", str(mode))
