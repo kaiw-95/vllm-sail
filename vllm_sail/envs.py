@@ -55,6 +55,7 @@ if TYPE_CHECKING:
     VLLM_SAIL_NVTX_VFA_DUMP_SEQLEN: bool = False
     VLLM_SAIL_FUSED_NORM_ROPE_ATTN: bool = False
     VLLM_SAIL_PPU_KV_MXFP8: bool = False
+    VLLM_SAIL_PPU_KV_NVFP4: bool = False
     VLLM_DEEPEPLL_RECV_HOOK: bool = True
     VLLM_GDN_DECODE_KERNEL: str = "auto"
 
@@ -79,6 +80,7 @@ if TYPE_CHECKING:
     VLLM_PPU_NVTX_VFA_DUMP_SEQLEN: bool = False
     VLLM_PPU_FUSED_NORM_ROPE_ATTN: bool = False
     VLLM_PPU_PPU_KV_MXFP8: bool = False
+    VLLM_PPU_PPU_KV_NVFP4: bool = False
 
 _TRUTHY = ("true", "1", "yes", "on")
 
@@ -242,6 +244,15 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # Read once per process by the dsv41_kv_record patch, which also prints
     # the forensic line "[VLLM_SAIL] kv_mxfp8=<bool> kv_bytes_per_token=<n>".
     "VLLM_SAIL_PPU_KV_MXFP8": _bool("VLLM_SAIL_PPU_KV_MXFP8", False),
+    # Compressed-KV record for the fused V4.1 path: True -> 288B NVFP4 record
+    # (256B e2m1 + 32 per-16 e4m3 scales) for the *compressed* cache only, while
+    # the sliding-window cache keeps the 528B MXFP8 record the kernel requires.
+    # Default OFF (opt-in): both caches stay 528B MXFP8, byte-identical to the
+    # behaviour without this variable. Requires the master switch and
+    # VLLM_SAIL_PPU_KV_MXFP8=1, capability 8.9 (ZW-M890P; the e2m1 PTX conversion
+    # is unavailable on 8.0) and sliding_window % 8 == 0; the fused gate closes
+    # with a named reason otherwise. Lossy: accuracy must be re-measured.
+    "VLLM_SAIL_PPU_KV_NVFP4": _bool("VLLM_SAIL_PPU_KV_NVFP4", False),
     # -- Distributed MoE ---------------------------------------------------
     # DeepEP low-latency deferred recv hook. The hook only pays off on backends
     # that can overlap the deferred receive with other compute; setting this to
