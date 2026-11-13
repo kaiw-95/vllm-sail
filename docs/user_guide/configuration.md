@@ -123,7 +123,7 @@ On Zhenwu 810E, the GLM indexer uses INT8. Selecting MXFP4 indexer cache
 explicitly is supported only for DeepSeek V4/V4.1 on M890. These format
 rules do not enable MegaMoE for GLM's ordinary FusedMoE path.
 
-The v0.33 integration retains upstream's `SparseAttnIndexer` for dense
+The integration retains upstream's `SparseAttnIndexer` for dense
 scoring, including candidate masking. V4/V4.1 query producers use the selected
 operator's `weights_dtype` contract. The separate candidate-only
 `SparseMQAIndexer` path can be enabled for DeepSeek V4.1 on M890 with

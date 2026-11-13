@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 # ruff: noqa: F821
-"""Enable v0.33's candidate-only indexer with SAIL DeepGEMM and DeepSelect.
+"""Enable the candidate-only indexer with SAIL DeepGEMM and DeepSelect.
 
-Constructors copied from vLLM 4ba787ec9959e566d3b587a796dff07673324da5.
+Constructors copied from vLLM 8b10bda57ceab3a741d2fb3718af48cef691023e.
 Their SM100 checks have no platform hook. Keep the remaining initialization,
 forward, candidate expansion, metadata builder and top-k/remapping upstream.
 """
@@ -21,8 +21,8 @@ from vllm_sail.attention.ops import sparse_mqa as _sail
 from vllm_sail.patch.bodies import bind_body
 from vllm_sail.patch.utils import patch
 
-_AFFECTED = ">=0.33.0,<0.34.0"
-_REASON = "PPU M890 uses SAIL sparse MXFP4 logits and DeepSelect through the v0.33 interface."
+_AFFECTED = ">=0.32.0,<0.33.0"
+_REASON = "PPU M890 uses SAIL sparse MXFP4 logits and DeepSelect through the upstream interface."
 _REMOVE_WHEN = "The sparse indexer exposes platform capability and DeepGEMM provider hooks."
 _LAYER = "vllm.model_executor.layers.sparse_mqa_indexer"
 _METADATA = "vllm.v1.attention.backends.mla.sparse_indexer"
@@ -57,7 +57,6 @@ def sparse_mqa_indexer_init(
     # PPU MODIFICATION: begin
     super(SparseMQAIndexer, self).__init__()
     if current_platform.is_ppu():
-        from vllm.config import get_current_vllm_config
         from vllm_sail.attention.ops.sparse_mqa import check_sparse_indexer_support
 
         check_sparse_indexer_support(get_current_vllm_config())
@@ -82,6 +81,7 @@ def sparse_mqa_indexer_init(
     self.topk_indices_buffer = topk_indices_buffer
     self.candidate_blocks = candidate_blocks
     self.candidate_block_size = candidate_block_size
+    self.use_fp4_cache = dsa_indexer_uses_fp4(get_current_vllm_config())
 
 
 @patch(
@@ -114,12 +114,6 @@ def sparse_metadata_builder_init(
         raise ValueError(
             f"{prefix} requires a two-level (candidate block) indexer model "
             "such as DeepSeek-V4.1."
-        )
-    if not dsa_indexer_uses_fp4(vllm_config):
-        raise ValueError(
-            f"{prefix} requires the MXFP4 indexer cache "
-            "(attention_config.indexer_kv_dtype='mxfp4'): the sparse kernels "
-            "take UE8M0-packed granularity-32 scales."
         )
     # PPU MODIFICATION: begin
     if current_platform.is_ppu():

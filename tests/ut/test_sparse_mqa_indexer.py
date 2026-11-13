@@ -1,13 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
 """Sparse-indexer integration contracts, runnable without torch or vLLM."""
 
+import ast
 import inspect
 from types import SimpleNamespace as NS
 
 import pytest
 
 from tests.support.modules import load_patch
-from tests.support.source import function
+from tests.support.source import ROOT, definition, function
 
 PATCH = "vllm_sail/patch/enhancement/attention/sparse_mqa_indexer.py"
 ADAPTER = "vllm_sail/attention/ops/sparse_mqa.py"
@@ -44,6 +45,7 @@ def config():
             )
         ),
         kernel_config=NS(sparse_indexer_topk_backend="auto"),
+        attention_config=NS(resolve_indexer_kv_dtype=lambda default: "mxfp4"),
     )
 
 
@@ -249,12 +251,17 @@ def installed(adapter, modules, patch_utils_module):
         has_deep_select=lambda: s.select,
         has_deep_gemm_sparse_mqa=lambda: "cuda-capability",
     )
-    layer_module = modules(LAYER, SparseMQAIndexer=Layer, **common)
+    layer_module = modules(
+        LAYER,
+        SparseMQAIndexer=Layer,
+        get_current_vllm_config=lambda: s.config,
+        dsa_indexer_uses_fp4=lambda config: s.fp4,
+        **common,
+    )
     builder_module = modules(
         BUILDER,
         DeepseekV41SparseIndexerMetadataBuilder=Builder,
         torch=s.torch,
-        dsa_indexer_uses_fp4=lambda config: s.fp4,
         pick_sparse_block_kv=lambda block: 16,
         check_deep_select_layout=lambda cols, topk: None,
         logger=NS(info_once=lambda *a: None),
@@ -303,7 +310,7 @@ def installed(adapter, modules, patch_utils_module):
                 module_name,
                 target[len(module_name) + 1 :],
                 reason="Reject duplicate sparse-indexer installation.",
-                affected_versions=">=0.33.0,<0.34.0",
+                affected_versions=">=0.32.0,<0.33.0",
                 remove_when="The platform exposes a sparse-indexer provider hook.",
             )(fn)
     with pytest.raises(RuntimeError, match="already"):
@@ -319,6 +326,7 @@ def test_sparse_constructor_and_builder_keep_upstream_state(installed):
     assert layer.initialized and layer.weights_dtype == "bf16"
     assert layer.k_cache is cache and layer.topk_indices_buffer is output
     assert layer.candidate_blocks is candidates
+    assert layer.use_fp4_cache is True
     builder = s.Builder(NS(block_size=64), ["indexer"], s.config, "ppu")
     assert builder.sparse_block_kv == 16 and builder.num_sparse_blocks == 32
     assert builder.min_split_seq_len == 256  # BF16 bytes expressed as FP32 columns.
@@ -334,6 +342,8 @@ def test_sparse_constructor_and_builder_keep_upstream_state(installed):
         s.Layer(cache, 32, 128, 4096, output, candidates, 16)
     s.capability = 100
     assert s.Layer(cache, 32, 128, 4096, output, candidates, 16).initialized
+    s.fp4 = False
+    assert s.Layer(cache, 32, 128, 4096, output, candidates, 16).use_fp4_cache is False
     cuda = s.Builder(NS(block_size=64), ["indexer"], s.config, "cuda")
     assert cuda.min_split_seq_len == 128  # Keep upstream's CUDA budget.
 
@@ -343,6 +353,8 @@ def test_sparse_builder_preserves_upstream_restrictions(installed, restriction):
     s = installed
     if restriction == "backend":
         s.config.kernel_config.sparse_indexer_topk_backend = "torch"
+    elif restriction == "fp4":
+        s.config.attention_config.resolve_indexer_kv_dtype = lambda default: "fp8"
     else:
         setattr(s, restriction, restriction == "cp")
     with pytest.raises((ValueError, NotImplementedError)):
@@ -350,7 +362,41 @@ def test_sparse_builder_preserves_upstream_restrictions(installed, restriction):
 
 
 @pytest.mark.upstream_source
-def test_sparse_api_signatures_match_the_v033_pin(upstream_source_root, adapter):
+@pytest.mark.parametrize(
+    "local,upstream,target",
+    [
+        ("sparse_mqa_indexer_init", LAYER, "SparseMQAIndexer.__init__"),
+        (
+            "sparse_metadata_builder_init",
+            BUILDER,
+            "DeepseekV41SparseIndexerMetadataBuilder.__init__",
+        ),
+    ],
+)
+def test_sparse_constructors_preserve_selected_upstream_state(
+    upstream_source_root, local, upstream, target
+):
+    class WithoutPPU(ast.NodeTransformer):
+        def visit_If(self, node):
+            if ast.unparse(node.test) == "current_platform.is_ppu()":
+                return node.orelse
+            return self.generic_visit(node)
+
+    patched = definition(ROOT / PATCH, local)
+    original = definition(
+        upstream_source_root / (upstream.replace(".", "/") + ".py"), target
+    )
+    patched = WithoutPPU().visit(patched)
+    patched.name = original.name
+    patched.decorator_list = []
+    # bind_body requires an explicit class in super(); all remaining statements
+    # must retain the selected pin's initialization and non-PPU behavior.
+    patched.body[0] = original.body[0]
+    assert ast.dump(patched) == ast.dump(original)
+
+
+@pytest.mark.upstream_source
+def test_sparse_api_signatures_match_the_selected_pin(upstream_source_root, adapter):
     for name in adapter.mod._APIS:
         upstream = function(upstream_source_root / "vllm/utils/deep_gemm.py", name, {})
         assert (

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""SAIL sparse logits behind the vLLM v0.33 DeepGEMM interface.
+"""SAIL sparse logits behind the upstream vLLM DeepGEMM interface.
 
 Candidate expansion, per-step schedule reuse, BF16 top-k and request-local
 remapping stay upstream. Only the external SAIL API and its layouts live here.
@@ -52,6 +52,8 @@ def check_sparse_indexer_support(vllm_config) -> None:
         raise ValueError(
             "PPU indexer_sparse_logits requires the enabled SAIL DeepSelect wheel"
         )
+    if vllm_config.attention_config.resolve_indexer_kv_dtype("mxfp4") != "mxfp4":
+        raise ValueError("PPU indexer_sparse_logits requires the MXFP4 indexer cache")
     hf = vllm_config.model_config.hf_text_config
     if hf.model_type not in ("deepseek_v41", "deepseek_v41_text"):
         raise ValueError(
