@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Retain ordinary MiniMax MoE finalize on PPU."""
 
-from vllm.model_executor.layers import linear as _linear
 from vllm.models.minimax_m3.nvidia import model as _model
 from vllm.models.minimax_m3.nvidia.model import MiniMaxM3Model
 from vllm.platforms import current_platform
@@ -15,22 +14,7 @@ _original_mlp_init = _model.MiniMaxM3MLP.__init__
 _original_maybe_init_gemm_rs = _model._maybe_init_gemm_rs
 _original_bind_gemm_rs = _model._bind_gemm_rs
 _original_norm_forward = _model.MiniMAXGemmaRMSNorm.forward
-_original_indexed_qkv_init = _linear.MinimaxM3QKVParallelLinearWithIndexer.__init__
 _ppu_mlp_init = bind_body(_mlp_body, _model)
-
-
-@patch(
-    "vllm.model_executor.layers.linear",
-    "MinimaxM3QKVParallelLinearWithIndexer.__init__",
-    reason="MiniMax's fused QKV/indexer constructor bypasses StackedColumnParallelLinear initialization, but its inherited loader now requires loaded_shard_ids. PPU retains the real constructor and initializes the missing per-load state.",
-    affected_versions=">=0.32.0,<0.33.0",
-    remove_when="The upstream fused QKV/indexer constructor initializes StackedColumnParallelLinear's load bookkeeping.",
-)
-def init_indexed_qkv(self, *args, **kwargs):
-    result = _original_indexed_qkv_init(self, *args, **kwargs)
-    if current_platform.is_ppu():
-        self.__dict__.setdefault("loaded_shard_ids", {})
-    return result
 
 
 @patch(

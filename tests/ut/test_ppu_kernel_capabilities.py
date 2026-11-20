@@ -17,6 +17,71 @@ ROOT = Path(__file__).parents[2]
 
 
 @pytest.mark.upstream_source
+@pytest.mark.parametrize("name", ["__init__", "_compress_norm_rope_store"])
+def test_compressor_complete_body_matches_provider_outside_ppu_regions(
+    upstream_source_root,
+    name,
+):
+    copied = definition(
+        ROOT / "vllm_sail/patch/enhancement/models/deepseek_v4_compressor.py",
+        name,
+    )
+    original = definition(
+        upstream_source_root / "vllm/models/deepseek_v4/compressor.py",
+        "DeepseekCompressor." + name,
+    )
+    copied.decorator_list = original.decorator_list = []
+    if name == "__init__":
+        copied.body[0] = original.body[0]
+    for node in ast.walk(copied):
+        if isinstance(node, ast.If) and isinstance(node.test, ast.BoolOp):
+            node.test.values = [
+                value
+                for value in node.test.values
+                if ast.unparse(value) != "not current_platform.is_ppu()"
+            ]
+    assert ast.dump(copied, include_attributes=False) == ast.dump(
+        original,
+        include_attributes=False,
+    )
+
+
+@pytest.mark.upstream_source
+@pytest.mark.parametrize("fail", [False, True])
+def test_compressor_real_projection_preserves_weight_and_fp32_mm_contract(
+    upstream_source_root,
+    fail,
+):
+    """执行完整 projection；mm 边界保留原权重和 FP32 输出要求，不冒充数值验证。"""
+    weight, transposed, inputs, output = object(), object(), object(), object()
+    error = RuntimeError("FP32-output mm unavailable")
+    calls = []
+
+    def mm(lhs, rhs, *, out_dtype):
+        assert lhs is inputs and rhs is transposed and out_dtype == "fp32"
+        calls.append((lhs, rhs, out_dtype))
+        if fail:
+            raise error
+        return output
+
+    owner = types.SimpleNamespace(weight=types.SimpleNamespace(T=transposed))
+    weight = owner.weight
+    project = function(
+        upstream_source_root / "vllm/models/deepseek_v4/compressor.py",
+        "DeepseekV4CompressorKVScoreLinear.forward",
+        {"torch": types.SimpleNamespace(mm=mm, float32="fp32")},
+    )
+    if fail:
+        with pytest.raises(RuntimeError) as raised:
+            project(owner, inputs)
+        assert raised.value is error
+    else:
+        assert project(owner, inputs) is output
+    assert calls == [(inputs, transposed, "fp32")]
+    assert owner.weight is weight
+
+
+@pytest.mark.upstream_source
 @pytest.mark.parametrize(
     "patch_file,inventory_name,provider",
     [
@@ -340,6 +405,7 @@ def complete_warmup_contract(modules, provider, worker, platform, *, entered=Non
     modules("vllm.distributed.parallel_state", get_pp_group=lambda: ns(world_size=1))
     worker.model_runner.attn_groups = []
     worker.vllm_config.model_config = ns()
+    worker.vllm_config.use_flashinfer_replayssm = False
     worker.vllm_config.compilation_config = ns(cudagraph_capture_sizes=[])
     config = worker.vllm_config.kernel_config
     if not hasattr(config, "enable_cutedsl_warmup"):
@@ -354,7 +420,14 @@ def complete_warmup_contract(modules, provider, worker, platform, *, entered=Non
             kernel.compile_many(keys)
 
     worker.model_runner.jit_warmup_registry.warmup = registry_warmup
+
+    def replayssm_lifecycle(runner):
+        assert runner is worker.model_runner
+        assert runner.vllm_config.use_flashinfer_replayssm is False
+
+    worker.model_runner.vllm_config = worker.vllm_config
     callbacks = {
+        "replayssm_lifecycle_warmup": replayssm_lifecycle,
         "qwen_triton_warmup": lambda runner, config: entered(),
         "qwen_vl_triton_warmup": lambda runner: None,
         "mamba_triton_warmup": lambda runner: None,
@@ -562,12 +635,18 @@ def test_compressor_constructor_registers_supported_warmup(
         f"{base}.compressor",
         DeepseekCompressor=cls,
         current_platform=types.SimpleNamespace(
-            device_type="cuda", is_cuda=lambda: True, is_ppu=lambda: ppu
+            device_type="cuda",
+            is_cuda=lambda: True,
+            is_ppu=lambda: ppu,
+            is_cpu=lambda: False,
         ),
         torch=types.SimpleNamespace(empty=noop, float32="fp32"),
         nn=types.SimpleNamespace(Parameter=noop),
         _prefer_two_stage_compressor=lambda: False,
-        MergedColumnParallelLinear=noop,
+        MergedColumnParallelLinear=lambda *a, **k: pytest.fail(
+            "非 CPU 不应使用 BF16 输出 projection"
+        ),
+        DeepseekV4CompressorKVScoreLinear=noop,
         RMSNorm=noop,
         CompressorStateCache=noop,
         _SAVE_PARTIAL_STATES_KERNEL=kernel("save"),
@@ -600,6 +679,10 @@ def test_compressor_constructor_registers_supported_warmup(
     )
     obj = cls(config, ratio, 256, head)
     assert obj.__init__.__func__.__globals__ is provider.__dict__
+    assert obj.coff == (2 if ratio == 4 else 1)
+    assert obj._quant_block == (64 if head == 512 else 128)
+    assert obj._token_stride == (576 if head == 512 else 128)
+    assert obj._scale_dim == (8 if head == 512 else 4)
     if not warmup:
         assert calls == []
     elif ppu or head != 512:
@@ -1336,3 +1419,204 @@ def test_fa_sink_combination_respects_ppu_fa3_and_fp8_gates(
         assert result is None
     else:
         assert expected in result
+
+
+@pytest.mark.upstream_source
+@pytest.mark.parametrize("capability", [80, 89])
+@pytest.mark.parametrize("rows", [1, 512, 1024])
+def test_qwen_hc_real_admission_avoids_compute_stub_and_keeps_linear_fallback(
+    upstream_source_root,
+    capability,
+    rows,
+):
+    ns = types.SimpleNamespace
+    source = upstream_source_root / "vllm"
+    family = function(
+        source / "platforms/interface.py", "Platform.is_device_capability_family", {}
+    )
+    platform = ns(get_device_capability=lambda **kw: ns(to_int=lambda: capability))
+    platform.is_device_capability_family = lambda value: family(platform, value)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("PPU 80/89 不得调用 SM100 compute stub")
+
+    torch_boundary = ns(
+        bfloat16="bf16", ops=ns(_C=ns(qwen4_exp_hc_up_gate_mix=forbidden))
+    )
+    supported = function(
+        source / "models/qwen4_exp/nvidia/ops/hc.py",
+        "hc_up_gate_mix_supported",
+        {"torch": torch_boundary, "current_platform": platform},
+    )
+    weight = ns(dtype="bf16", shape=(10240, 320))
+    assert not supported(weight, 4)
+    platform.get_device_capability = lambda **kw: ns(to_int=lambda: 100)
+    assert supported(weight, 4)
+    platform.get_device_capability = lambda **kw: ns(to_int=lambda: capability)
+    lowrank, gate, result = object(), object(), object()
+    xn = ns(shape=(rows, 10240))
+    calls = []
+
+    class Linear:
+        def __init__(self):
+            self.weight = weight
+
+        def __call__(self, value):
+            assert value is lowrank
+            calls.append("linear")
+            return gate
+
+    def mix(value, actual_gate, count):
+        assert value is xn and actual_gate is gate and count == 4
+        calls.append("gate_mix")
+        return result
+
+    owner = ns(
+        _use_hc_up_gate_mix=supported(weight, 4),
+        input_mix_weight_up=Linear(),
+        hc_count=4,
+    )
+    up = function(
+        source / "models/qwen4_exp/nvidia/hyperconnection.py",
+        "GatedResidual._up_gate_mix",
+        {
+            "MIN_FUSED_UP_M": 512,
+            "ReplicatedLinear": Linear,
+            "hc_up_gate_mix": forbidden,
+            "hc_gate_mix": mix,
+        },
+    )
+    assert up(owner, lowrank, xn) is result
+    assert calls == ["linear", "gate_mix"]
+
+
+@pytest.mark.upstream_source
+@pytest.mark.parametrize(
+    "capability,sleep,quantized,ubatching",
+    [
+        (80, False, False, False),
+        (89, True, False, True),
+        (80, True, True, True),
+        (89, False, True, False),
+        (100, True, False, True),
+        (100, False, False, True),
+    ],
+)
+def test_kimi_real_constructor_resolves_sleep_and_ppu_flags_before_tail_admission(
+    upstream_source_root,
+    capability,
+    sleep,
+    quantized,
+    ubatching,
+):
+    ns = types.SimpleNamespace
+    warnings, events, calls = [], [], []
+
+    class Unquantized:
+        pass
+
+    transform = ns(up_proj=ns(quant_method=object() if quantized else Unquantized()))
+    config = ns(
+        model_config=ns(enable_sleep_mode=sleep),
+        parallel_config=ns(use_ubatching=ubatching),
+    )
+    marker = object()
+
+    class Base:
+        def __init__(self, supplied, *, routed_output_transform):
+            assert supplied is marker and routed_output_transform is transform
+            calls.append("base")
+            self.routed_output_transform = transform
+            self.moe_config = ns(tp_size=8, is_sequence_parallel=False)
+            self._shared_experts = object()
+            self._fused_output_is_reduced = False
+
+    def event():
+        value = object()
+        events.append(value)
+        return value
+
+    platform = ns(is_cuda=lambda: True, is_ppu=lambda: capability in (80, 89))
+    family = function(
+        upstream_source_root / "vllm/platforms/interface.py",
+        "Platform.is_device_capability_family",
+        {},
+    )
+    platform.get_device_capability = lambda **kw: ns(to_int=lambda: capability)
+    platform.is_device_capability_family = lambda value: family(platform, value)
+    cls = function(
+        upstream_source_root / "vllm/models/kimi_k3/nvidia/latent_moe_runner.py",
+        "LatentMoERunner",
+        {
+            "MoERunner": Base,
+            "torch": ns(cuda=ns(Event=event)),
+            "current_platform": platform,
+            "UnquantizedLinearMethod": Unquantized,
+            "get_current_vllm_config": lambda: config,
+            "logger": ns(warning_once=lambda *args: warnings.append(args)),
+        },
+    )
+    initialize = function(
+        "vllm_sail/patch/enhancement/models/kimi_k3.py",
+        "runner_init",
+        {
+            "_upstream_runner_init": cls.__init__,
+            "current_platform": platform,
+            "UnquantizedLinearMethod": Unquantized,
+        },
+    )
+    owner = object.__new__(cls)
+    if capability == 100 and not sleep:
+        with pytest.raises(ValueError, match="DBO or ubatching"):
+            initialize(owner, marker, routed_output_transform=transform)
+    else:
+        initialize(owner, marker, routed_output_transform=transform)
+        assert owner.enable_k3_latent_moe_tail_fusion is False
+        if platform.is_ppu():
+            assert owner._up_proj_is_quantized is quantized
+            assert owner._use_fused_path() is (not quantized)
+        else:
+            assert not hasattr(owner, "_up_proj_is_quantized")
+    assert calls == ["base"] and owner._shared_ar_events == tuple(events)
+    assert len(events) == 2
+    assert bool(warnings) is (capability == 100 and sleep)
+
+
+@pytest.mark.upstream_source
+@pytest.mark.parametrize("preloaded", [False, True])
+@pytest.mark.parametrize("ppu", [False, True])
+def test_glm_mega_admission_is_consistent_for_preloaded_model_classes(
+    modules,
+    upstream_source_root,
+    preloaded,
+    ppu,
+):
+    ns = types.SimpleNamespace
+    platform = ns(is_ppu=lambda: ppu)
+    modules("vllm.platforms", current_platform=platform)
+    modules("torch")
+    modules("vllm.logger", init_logger=lambda name: ns(warning=lambda *args: None))
+    modules(
+        "vllm.models.glm5next.nvidia.ops.kpool_compress", fwht128_quant_fp8=lambda q: q
+    )
+    original = function(
+        upstream_source_root / "vllm/models/glm5next/common/model.py",
+        "Glm5NextMoE._init_mega_moe_experts",
+        {},
+    )
+    modules(
+        "vllm.model_executor.layers.fused_moe.deep_gemm_mega_moe",
+        MegaMoEActivation=object,
+    )
+    modules("vllm.models.glm5next.nvidia.mega_moe", Glm5NextMegaMoEExperts=object)
+    cls = type("Glm5NextMoE", (), {"_init_mega_moe_experts": original})
+    model = modules("vllm.models.glm5next.common.model", Glm5NextMoE=cls)
+    captured = model.Glm5NextMoE if preloaded else None
+    patch_module = load_patch("vllm_sail/patch/enhancement/models/glm5_next.py")
+    captured = captured if preloaded else model.Glm5NextMoE
+    owner = captured()
+    config = ns(parallel_config=ns(enable_expert_parallel=False))
+    expected = "SAIL MegaMoE only supports MXFP4" if ppu else "requires expert parallel"
+    with pytest.raises(NotImplementedError, match=expected):
+        owner._init_mega_moe_experts(config, object(), object(), "model.layers.45.mlp")
+    assert patch_module._upstream_init_mega_moe_experts is original

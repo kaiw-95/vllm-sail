@@ -197,7 +197,7 @@ def make_wna16_moe_kernel(
         XPUExpertsWNA16,
     )
     from vllm.model_executor.layers.fused_moe.experts.zentorch_moe import (
-        ZentorchExpertsInt4,
+        ZentorchExpertsWNA16,
     )
 
     # PPU MODIFICATION: begin — plugin experts are not in upstream's allowlist.
@@ -211,7 +211,7 @@ def make_wna16_moe_kernel(
 
     # Currently, we only support TrtLlmMxint4ExpertsMonolithic, MarlinExperts,
     # BatchedMarlinExperts, XPUExpertsWNA16, CPUExpertsInt4,
-    # ZentorchExpertsInt4, the Humming grouped/indexed experts, and
+    # ZentorchExpertsWNA16, the Humming grouped/indexed experts, and
     # Int4EmulationTritonExperts
     allowed_experts: tuple[type[mk.FusedMoEExperts], ...] = (
         MarlinExperts,
@@ -224,7 +224,7 @@ def make_wna16_moe_kernel(
         TrtLlmMxint4ExpertsMonolithic,
         XPUExpertsWNA16,
         CPUExpertsInt4,
-        ZentorchExpertsInt4,
+        ZentorchExpertsWNA16,
         Int4EmulationTritonExperts,
         Rdna3WNA16Experts,
     )
@@ -284,7 +284,6 @@ def _backend_incompatibility_reason(
             allow_tile_padding,
         )
     from compressed_tensors.quantization import QuantizationArgs
-    from vllm import envs
     from vllm.model_executor.layers.quantization.auto_gptq import AutoGPTQConfig
 
     from vllm_sail.patch.enhancement.models.moe_marlin_gate import (
@@ -299,8 +298,6 @@ def _backend_incompatibility_reason(
         quant_config, "actorder", None
     ) in ("group", "dynamic"):
         return "PPU W4A16 does not consume GPTQ activation ordering"
-    if (envs.VLLM_MARLIN_INPUT_DTYPE or "").lower() in ("int8", "fp8"):
-        return "PPU W4A16 requires 16-bit activation packing"
     if quant_config.group_size != 32 or not supports_marlin_layout(
         moe_config, 32, allow_tile_padding
     ):

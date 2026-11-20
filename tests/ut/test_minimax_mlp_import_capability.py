@@ -207,7 +207,7 @@ def test_registered_mlp_keeps_constructor_and_forward_contract(
     assert mlp.down_proj.kwargs == dict(
         bias=False,
         quant_config=quant,
-        reduce_results=not disable,
+        reduce_results=not disable and not sequence_parallel,
         disable_tp=disable,
         prefix="layers.0.mlp.down_proj",
     )
@@ -510,21 +510,22 @@ def test_real_indexed_qkv_constructor_retains_storage_and_initializes_load_state
         replicate_index_q=replicate_index_q,
     )
     before = cls(**kwargs)
-    assert "loaded_shard_ids" not in before.__dict__
+    assert before.loaded_shard_ids == {}
     incoming = object()
-    with pytest.raises(AttributeError, match="loaded_shard_ids"):
-        before.weight_loader_v2(param, incoming, "index_k")
+    before.weight_loader_v2(param, incoming, "index_k")
+    assert before.loaded_shard_ids == {"weight": {"index_k"}}
+    assert before.pop_missing_shards() == [
+        "weight." + shard for shard in cls.shard_ids[:-1]
+    ]
+    loads.clear()
+    real_init = cls.__init__
     load_patch("vllm_sail/patch/enhancement/models/minimax_m3.py")
+    assert cls.__init__ is real_init
     after = cls(**kwargs)
     assert constructors[0] == constructors[1]
     assert constructors[1]["quant_config"] is quant
     assert after.weight is param
-    assert {
-        k: v for k, v in after.__dict__.items() if k != "loaded_shard_ids"
-    } == before.__dict__
-    if not ppu:
-        assert "loaded_shard_ids" not in after.__dict__
-        return
+    assert after.__dict__ == before.__dict__
     assert after.loaded_shard_ids == {}
     for shard in cls.shard_ids:
         after.weight_loader_v2(param, incoming, shard)
@@ -545,13 +546,231 @@ def test_real_indexed_qkv_constructor_retains_storage_and_initializes_load_state
         "weight." + shard for shard in cls.shard_ids[1:]
     ]
     assert after.loaded_shard_ids == {}
-    # constructor 委托不得覆盖 provider 已有的 shard 状态。
+    # 真实父类为新一轮初始化重置 bookkeeping，旧加载记录不应跨轮混入。
     after.validate_shard_id("index_q", param)
     existing = after.loaded_shard_ids
     cls.__init__(after, **kwargs)
-    assert after.loaded_shard_ids is existing
+    assert after.loaded_shard_ids == {} and after.loaded_shard_ids is not existing
     assert existing == {"weight": {"index_q"}}
     assert constructors[2] == constructors[0]
+    after.weight_loader_v2(param, incoming, "v")
+    assert after.pop_missing_shards() == [
+        "weight." + shard for shard in cls.shard_ids if shard != "v"
+    ]
+    assert after.loaded_shard_ids == {}
+
+
+@pytest.mark.upstream_source
+@pytest.mark.parametrize("pp_size", [1, 3])
+@pytest.mark.parametrize("tp_size", [1, 4])
+@pytest.mark.parametrize("ep", [False, True])
+@pytest.mark.parametrize("backend", ["deep_gemm_mega_moe", "triton"])
+def test_real_minimax_sequence_parallel_admission_keeps_pp(
+    upstream_source_root, pp_size, tp_size, ep, backend
+):
+    resolve = function(
+        upstream_source_root / "vllm/models/minimax_m3/nvidia/model.py",
+        "_use_sequence_parallel",
+        {},
+    )
+    config = NS(
+        kernel_config=NS(moe_backend=backend),
+        parallel_config=NS(
+            pipeline_parallel_size=pp_size,
+            tensor_parallel_size=tp_size,
+            enable_expert_parallel=ep,
+        ),
+    )
+    assert resolve(config) is (backend == "deep_gemm_mega_moe" and ep and tp_size > 1)
+
+
+@pytest.mark.upstream_source
+@pytest.mark.parametrize("first_rank", [False, True])
+@pytest.mark.parametrize("last_rank", [False, True])
+@pytest.mark.parametrize("sequence_parallel", [False, True])
+@pytest.mark.parametrize("with_aux", [False, True])
+def test_real_minimax_pp_transport_restores_residual_aux_and_token_extent(
+    modules,
+    monkeypatch,
+    upstream_source_root,
+    first_rank,
+    last_rank,
+    sequence_parallel,
+    with_aux,
+):
+    """执行完整真实 forward 和 Eagle 打包方法，外部 collective 用严格边界替身。"""
+    provider = load_model(modules, monkeypatch, upstream_source_root, True)
+    load_patch("vllm_sail/patch/enhancement/models/minimax_m3.py")
+    events = []
+
+    class Tensor:
+        def __init__(self, rows):
+            self.rows = [list(row) for row in rows]
+            self.shape = (len(self.rows), len(self.rows[0]))
+
+        def __getitem__(self, selection):
+            assert isinstance(selection, slice)
+            return Tensor(self.rows[selection])
+
+        def clone(self):
+            return Tensor(self.rows)
+
+        def __add__(self, other):
+            assert self.shape == other.shape
+            return Tensor(
+                [
+                    [a + b for a, b in zip(x, y, strict=False)]
+                    for x, y in zip(self.rows, other.rows, strict=False)
+                ]
+            )
+
+        def split(self, width, *, dim):
+            assert dim == -1 and self.shape[1] % width == 0
+            return tuple(
+                Tensor([row[start : start + width] for row in self.rows])
+                for start in range(0, self.shape[1], width)
+            )
+
+    def shifted(value, increment):
+        return Tensor([[cell + increment for cell in row] for row in value.rows])
+
+    hidden = Tensor([[i, i + 1] for i in range(5)])
+    residual = shifted(hidden, 100)
+    positions = object()
+    padding = object()
+    context = NS(is_padding=padding)
+    shard_mask = object()
+
+    def shard(value):
+        events.append(("shard", value))
+        return Tensor(value.rows[:3])
+
+    def gather(value):
+        assert value.shape[0] == 3
+        events.append(("gather", value))
+        return Tensor(value.rows + value.rows)
+
+    def concatenate(values, dim):
+        assert dim == -1 and len({value.shape[0] for value in values}) == 1
+        events.append(("cat", tuple(values)))
+        return Tensor(
+            [
+                sum([value.rows[i] for value in values], [])
+                for i in range(values[0].shape[0])
+            ]
+        )
+
+    def mask(actual, value):
+        assert actual is padding and value is hidden
+        events.append(("mask", actual))
+        return shard_mask
+
+    def input_norm(value, skip):
+        assert value.shape[0] == (3 if sequence_parallel else 5)
+        if skip is not None:
+            assert skip.shape == value.shape
+        events.append(("input-norm", value, skip))
+        return value, value if skip is None else skip
+
+    def layer_forward(actual_positions, value, skip):
+        assert actual_positions is positions
+        assert context.is_padding is (shard_mask if sequence_parallel else padding)
+        events.append(("layer", value, skip))
+        return shifted(value, 10), shifted(skip, 20)
+
+    class Intermediate(dict):
+        @property
+        def tensors(self):
+            return self
+
+    provider.torch.cat = concatenate
+    provider.get_pp_group = lambda: NS(is_first_rank=first_rank, is_last_rank=last_rank)
+    provider.sp_shard, provider.sp_all_gather = shard, gather
+    provider.sp_padding_mask = mask
+    provider.envs = NS(VLLM_MOE_SKIP_PADDING=True)
+    provider.is_forward_context_available = lambda: True
+    provider.get_forward_context = lambda: context
+    provider.IntermediateTensors = Intermediate
+    model = object.__new__(provider.MiniMaxM3Model)
+    model.use_sequence_parallel = sequence_parallel
+    model.start_layer, model.end_layer = 0, 1
+    model.layers = [
+        NS(forward_input_norm=input_norm, forward_after_input_norm=layer_forward)
+    ]
+    model.aux_hidden_state_layers = {0, 1} if with_aux else set()
+    model.fuse_final_norm_allreduce = False
+    model.norm = lambda value, skip: (shifted(value, 30), shifted(skip, 40))
+    model.embed_input_ids = lambda actual: hidden
+    model.AUX_HIDDEN_STATE_KEY = "aux_"
+    model._aux_slot_base_cached = 0
+    model._aux_upstream_total_cached = 0
+    for name in (
+        "_maybe_add_hidden_state",
+        "pack_local_aux_hidden_states",
+        "collect_remote_aux_hidden_states",
+    ):
+        method = function(
+            upstream_source_root / "vllm/model_executor/models/interfaces.py",
+            "EagleModelMixin." + name,
+            {},
+        )
+        setattr(model, name, method.__get__(model))
+    intermediate = (
+        None
+        if first_rank
+        else Intermediate(
+            hidden_states=hidden,
+            residual=residual,
+        )
+    )
+    result = model.forward(None, positions, intermediate)
+    assert context.is_padding is padding
+    assert [event[0] for event in events].count("shard") == (
+        (1 if first_rank else 2) if sequence_parallel else 0
+    )
+    assert [event[0] for event in events].count("gather") == int(sequence_parallel)
+    norm_event = next(event for event in events if event[0] == "input-norm")
+    if not first_rank:
+        assert norm_event[2].rows == (
+            residual.rows[:3] if sequence_parallel else residual.rows
+        )
+    rows = [0, 1, 2, 0, 1] if sequence_parallel else list(range(5))
+    expected_hidden = [
+        [i + (40 if last_rank else 10), i + (41 if last_rank else 11)] for i in rows
+    ]
+    if not last_rank:
+        assert result["hidden_states"].rows == expected_hidden
+        residual_offset = 20 if first_rank else 120
+        assert result["residual"].rows == [
+            [i + residual_offset, i + residual_offset + 1] for i in rows
+        ]
+        aux_count = (2 if first_rank else 1) if with_aux else 0
+        assert set(result) == {
+            "hidden_states",
+            "residual",
+            *["aux_" + str(i) for i in range(aux_count)],
+        }
+        if with_aux:
+            summed_offset = 30 if first_rank else 130
+            assert result["aux_" + str(aux_count - 1)].rows == [
+                [2 * i + summed_offset, 2 * i + summed_offset + 2] for i in rows
+            ]
+    else:
+        if with_aux:
+            output, aux = result
+            assert len(aux) == (2 if first_rank else 1)
+            skip_offset = 60 if first_rank else 160
+            assert aux[-1].rows == [
+                [i + skip_offset, i + skip_offset + 1] for i in rows
+            ]
+        else:
+            output = result
+        assert output.rows == expected_hidden
+    if sequence_parallel:
+        gather_event = next(event for event in events if event[0] == "gather")
+        assert gather_event[1].shape[1] == 2 * (
+            (1 if last_rank else 2) + ((2 if first_rank else 1) if with_aux else 0)
+        )
 
 
 @pytest.mark.upstream_source

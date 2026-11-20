@@ -97,7 +97,9 @@ _FORWARD_PPU_REASON = (
     "PPUs (890P/SM89) delegate to the upstream fp8 path. Upstream has no "
     "forward_ppu; installed additively and reached through the "
     "custom_op_dispatch patch (enabled path) or the forward_native "
-    "redirect (disabled path)."
+    "redirect (disabled path). The INT8 path rejects PCP and DCP before "
+    "cache access because distributed pool/tail input gathering and "
+    "global top-k merging are not implemented."
 )
 _FORWARD_PPU_REMOVE_WHEN = (
     "upstream's kpool indexer grows a platform hook, or PPU stops overriding this op."
@@ -213,6 +215,14 @@ def forward_ppu(
         raise NotImplementedError(
             "PPU INT8 kpool indexer requires decode context parallel size 1; "
             "distributed cache mapping and global top-k merge are not implemented"
+        )
+    # PCP 使用 rank-local K/gate，却提供 rank-major 展开的 slot mapping；
+    # INT8 池和 tail 写入尚无对应 gather，不能仅替换 prefill 的 cu_seq_lens。
+    parallel = getattr(self, "_parallel_config", None)
+    if getattr(parallel, "prefill_context_parallel_size", 1) > 1:
+        raise NotImplementedError(
+            "PPU INT8 kpool indexer requires prefill context parallel size 1; "
+            "PCP pool/tail cache input gathering is not implemented"
         )
 
     # ``topk_backend`` selects among the CUDA top-k dispatches

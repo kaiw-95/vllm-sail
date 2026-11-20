@@ -267,6 +267,49 @@ def test_accepted_regressions_are_excluded_and_stubbable(shipped: m.Manifest) ->
     assert ACCEPTED_REGRESSIONS <= set(shipped.excluded_ops())
 
 
+@pytest.mark.upstream_source
+def test_sm100_hc_exclusion_and_marlin_schemas_follow_real_bindings(
+    shipped,
+    upstream_source_root,
+):
+    """对完整真实 binding 执行生产 pruner；不模拟 Torch schema parser 或设备。"""
+    from vllm_sail.native import porting
+
+    name = "qwen4_exp_hc_up_gate_mix"
+    entry = next(e for e in shipped if name in e.ops)
+    assert entry.path == "csrc/qwen4_exp/hc_up_gate_mix.cu"
+    assert entry.tier == "x" and "tcgen05" in entry.hazards
+    assert entry not in shipped.compiled()
+    owner = {op: e for e in shipped for op in e.ops}
+    pruner = porting._BindingPruner(
+        owner, frozenset(shipped.compiled_tiers), shipped.hazards
+    )
+    for path in shipped.prune_bindings:
+        source = (upstream_source_root / path).read_text()
+        pruned = pruner.prune(source)
+        assert f'"{name}(' not in pruned
+        assert f"TORCH_BOX(&{name})" not in pruned
+    excluded = {(op.namespace, op.name): op for op in pruner.excluded()}
+    hc = excluded[("_C", name)]
+    assert (
+        hc.schema
+        == "qwen4_exp_hc_up_gate_mix(Tensor! out, Tensor lowrank, Tensor xn, Tensor w_up) -> ()"
+    )
+    assert hc.tier == "x" and hc.kind == "compute"
+    assert hc.reason == "; ".join(shipped.hazards[h] for h in entry.hazards)
+    assert name not in pruner.unclaimed()
+    for op in ("gptq_marlin_repack", "awq_marlin_repack"):
+        assert excluded[("_C", op)].schema == (
+            f"{op}(Tensor b_q_weight, SymInt size_k, SymInt size_n, int num_bits) -> Tensor"
+        )
+    for namespace, op in (("_C", "marlin_gemm"), ("_moe_C", "moe_wna16_marlin_gemm")):
+        assert "a_scales" not in excluded[(namespace, op)].schema
+    assert all(op.name != "marlin_int4_fp8_preprocess" for op in pruner.excluded())
+    assert 'name = "marlin_int4_fp8_preprocess"' not in porting.render_excluded_ops(
+        shipped, pruner.excluded()
+    )
+
+
 @pytest.mark.parametrize(
     "op",
     [

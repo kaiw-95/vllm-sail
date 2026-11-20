@@ -18,7 +18,7 @@ schema = 1
 
 # The exact upstream vLLM tag the corpus is translated from. Bumping this means
 # re-running tools/port_upstream_kernels.py and reviewing the diff.
-upstream_ref = "7663a8c524c056493e4924fdd851025de84ac91e"
+upstream_ref = "5b62a2853d017f71eca4509fad0fdc9a5e4dc65f"
 
 # Compiled tiers, in the order CMake receives them. `x` must never appear here.
 # Must stay above [tiers]: a bare key after a table header belongs to that table.
@@ -475,6 +475,13 @@ ops = ["moe_wna16_gemm"]
 # ---------------------------------------------------------------------------
 # Tier x -- excluded. Every op here gets a runtime stub.
 # ---------------------------------------------------------------------------
+
+[[entry]]
+path = "csrc/qwen4_exp/hc_up_gate_mix.cu"
+tier = "x"
+hazards = ["tcgen05", "cp_async", "ptx"]
+ops = ["qwen4_exp_hc_up_gate_mix"]
+notes = "SM100 专用 TMA/TMEM、tcgen05 和 cluster launch；PPU 80/89 不满足真实设备门控，保留 ReplicatedLinear 与 hc_gate_mix fallback。"
 
 [[entry]]
 path = "csrc/fused_mqa_topk/fused_mqa_topk.cu"

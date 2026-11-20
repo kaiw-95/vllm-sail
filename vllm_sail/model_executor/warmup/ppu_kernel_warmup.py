@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 # These globals are supplied by bind_body; keep imports static-only.
 if TYPE_CHECKING:
     from vllm.model_executor.warmup.kernel_warmup import (
+        _rocm_aiter_gemm_warmup,
         _warmup_bf16x3_router_gemm,
         _warmup_flashinfer_attention,
         _warmup_gemm_rs_ar,
@@ -33,6 +34,7 @@ if TYPE_CHECKING:
         qwen4_exp_qsa_triton_warmup,
         qwen_triton_warmup,
         qwen_vl_triton_warmup,
+        replayssm_lifecycle_warmup,
         time,
         watermark_sample_warmup,
     )
@@ -72,6 +74,7 @@ def kernel_warmup(worker: Worker, *, process_local_only: bool = False):
     qwen_triton_warmup(worker.model_runner, worker.vllm_config.model_config)
     qwen_vl_triton_warmup(worker.model_runner)
     mamba_triton_warmup(worker.model_runner)
+    replayssm_lifecycle_warmup(worker.model_runner)
 
     compilation_config = worker.vllm_config.compilation_config
     cudagraph_capture_sizes = list(compilation_config.cudagraph_capture_sizes or [])
@@ -113,6 +116,7 @@ def kernel_warmup(worker: Worker, *, process_local_only: bool = False):
         )
 
         rocm_segmented_attn_autotune_warmup(worker)
+        _rocm_aiter_gemm_warmup(worker)
 
     flashinfer_sparse_mla_decode_autotune_warmup(worker)
     deepseek_v4_sparse_mla_attention_warmup(worker)
