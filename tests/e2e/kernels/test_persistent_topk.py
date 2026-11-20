@@ -34,6 +34,38 @@ def assert_topk(torch, logits, indices, lengths):
         torch.testing.assert_close(actual, expected, rtol=0, atol=0)
 
 
+@pytest.mark.parametrize("experts", [32, 128])
+@pytest.mark.parametrize("renormalize", [False, True])
+def test_softmax_topk_graph_replay_without_programmatic_dependency(
+    topk_runtime, experts, renormalize
+):
+    """PPU SM80/89 的普通 graph launch 保持 top-k 数值和重放输入更新。"""
+    torch = topk_runtime
+    logits = torch.linspace(-2, 2, experts, device="cuda").repeat(5, 1)
+    weights = torch.empty((5, 8), dtype=torch.float32, device="cuda")
+    indices = torch.empty((5, 8), dtype=torch.int32, device="cuda")
+    token_expert_indices = torch.empty_like(indices)
+
+    def run():
+        torch.ops._moe_C.topk_softmax(
+            weights, indices, token_expert_indices, logits, renormalize, None, None
+        )
+
+    run()
+    torch.cuda.synchronize()
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        run()
+    for sign in (1, -1, 1):
+        logits.copy_(sign * torch.linspace(-2, 2, experts, device="cuda"))
+        graph.replay()
+        expected_weights, expected_ids = logits.softmax(-1).topk(8, dim=-1)
+        if renormalize:
+            expected_weights /= expected_weights.sum(-1, keepdim=True)
+        torch.testing.assert_close(indices.long(), expected_ids, rtol=0, atol=0)
+        torch.testing.assert_close(weights, expected_weights, rtol=1e-5, atol=1e-6)
+
+
 @pytest.mark.parametrize("experts", [32, 128, 256])
 @pytest.mark.parametrize("groups", [1, 4])
 @pytest.mark.parametrize("scoring_func", [0, 1])
