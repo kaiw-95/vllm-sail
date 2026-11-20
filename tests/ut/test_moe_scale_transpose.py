@@ -127,3 +127,75 @@ def test_actual_fp8_config_layout_reaches_the_group_quantizer(
         is_scale_transposed=config.is_scale_transposed,
     ) == (values, scales)
     assert calls == [(tensor, 128, {"column_major_scales": transpose})]
+
+
+@pytest.mark.requires_runtime
+@pytest.mark.upstream_source
+@pytest.mark.parametrize("ppu", [False, True])
+@pytest.mark.parametrize("backend", ["FLASHINFER_CUTLASS", "HPC"])
+def test_real_per_tensor_config_refills_derived_storage(
+    monkeypatch, upstream_source_root, ppu, backend
+):
+    torch = pytest.importorskip("torch")
+    platform(monkeypatch, ppu)
+    oracle_path = (
+        upstream_source_root / "vllm/model_executor/layers/fused_moe/oracle/fp8.py"
+    )
+    helpers = {"torch": torch}
+    utils_path = upstream_source_root / "vllm/model_executor/utils.py"
+    replace = function(utils_path, "replace_parameter", helpers)
+    refill = function(utils_path, "refill_derived", helpers)
+    backend_type = function(oracle_path, "Fp8MoeBackend", {"Enum": Enum})
+    original = function(
+        oracle_path,
+        "make_fp8_moe_quant_config",
+        {
+            "Fp8MoeBackend": backend_type,
+            "replace_parameter": replace,
+            "refill_derived": refill,
+            "fp8_w8a8_moe_quant_config": lambda **kwargs: NS(**kwargs),
+        },
+    )
+    make_config = function(
+        "vllm_sail/registry/moe_backends/fp8.py",
+        "make_fp8_moe_quant_config",
+        {"_upstream_quant_config": original},
+    )
+    layer = torch.nn.Module()
+    alpha, beta = 1.7, 0.4
+
+    def configure(multiplier):
+        return make_config(
+            getattr(backend_type, backend),
+            torch.tensor([2.0, 3.0]) * multiplier,
+            torch.tensor([5.0, 7.0]) * multiplier,
+            torch.tensor([0.5, 0.25]) * multiplier,
+            torch.tensor([0.125, 0.0625]) * multiplier,
+            gemm1_alpha=alpha,
+            gemm1_beta=beta,
+            layer=layer,
+        )
+
+    first = configure(1)
+    names = ("g1_alphas", "g2_alphas", "_a1_gscale", "_a2_gscale")
+    held = [getattr(layer, name) for name in names]
+    pointers = [value.data_ptr() for value in held]
+    loader = object()
+    layer.g1_alphas.weight_loader = loader
+    second = configure(2)
+    assert [getattr(layer, name).data_ptr() for name in names] == pointers
+    assert all(
+        getattr(layer, name) is value for name, value in zip(names, held, strict=False)
+    )
+    assert layer.g1_alphas.weight_loader is loader
+    for field, value in zip(
+        ("g1_alphas", "g2_alphas", "a1_gscale", "a2_gscale"), held, strict=False
+    ):
+        assert getattr(first, field) is getattr(second, field) is value
+    expected = ([4.0, 3.0], [2.5, 1.75], [1.0, 2.0], [4.0, 8.0])
+    for value, values in zip(held, expected, strict=False):
+        assert torch.equal(value, torch.tensor(values))
+    assert "_a1_gscale" not in layer._parameters
+    assert "_a2_gscale" not in layer._buffers
+    if ppu:
+        assert second.gemm1_alpha == alpha and second.gemm1_beta == beta

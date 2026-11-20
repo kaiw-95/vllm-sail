@@ -9,7 +9,7 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from tests.support.source import definition, function
+from tests.support.source import ROOT, definition, function
 
 PATCH = "vllm_sail/patch/enhancement/attention/gdn.py"
 
@@ -63,6 +63,7 @@ def resolve(monkeypatch):
         xpu_available=True,
         pla=True,
         capability=89,
+        cuda_runtime=13,
         mi3xx=False,
         unsupported_reasons=(),
         helper=None,
@@ -77,7 +78,7 @@ def resolve(monkeypatch):
             is_xpu=lambda: device == "xpu",
             is_device_capability=lambda value: capability == value,
             is_device_capability_family=lambda value: capability // 10 == value // 10,
-            get_cuda_runtime_major=lambda: 13,
+            get_cuda_runtime_major=lambda: cuda_runtime,
         )
 
         def aiter_available():
@@ -226,6 +227,74 @@ def test_real_flydsl_reasons_drive_upstream_and_copied_auto_routing(
     )
     assert result == ("auto", active)
     assert not warnings
+
+
+@pytest.mark.upstream_source
+@pytest.mark.parametrize("device", ["cuda", "ppu"])
+@pytest.mark.parametrize("capability", [80, 89, 90, 100, 110, 120])
+@pytest.mark.parametrize("head_k", [64, 128])
+@pytest.mark.parametrize("cuda_runtime", [12, 13])
+@pytest.mark.parametrize("backend", ["auto", "flashinfer", "cutedsl"])
+def test_cuda_eligibility_and_ppu_short_circuit(
+    upstream_source_root, resolve, device, capability, head_k, cuda_runtime, backend
+):
+    path = (
+        upstream_source_root
+        / "vllm/model_executor/layers/mamba/gdn/qwen_gdn_linear_attn.py"
+    )
+    options = dict(capability=capability, head_k=head_k, cuda_runtime=cuda_runtime)
+    upstream, _ = resolve("cuda", backend, body=path, **options)
+    copied, warnings = resolve(device, backend, **options)
+    if device == "cuda":
+        assert copied == upstream
+    else:
+        assert copied == (backend, "pla" if backend == "auto" else "triton")
+    if capability == 110:
+        expected = (
+            "cutedsl"
+            if backend == "cutedsl" and head_k == 128 and cuda_runtime >= 13
+            else "triton"
+        )
+        assert upstream == (backend, expected)
+    assert not warnings
+
+
+@pytest.mark.upstream_source
+def test_complete_resolver_retains_only_documented_ppu_differences(
+    upstream_source_root,
+):
+    path = (
+        upstream_source_root
+        / "vllm/model_executor/layers/mamba/gdn/qwen_gdn_linear_attn.py"
+    )
+    copied = definition(ROOT / PATCH, "_resolve_gdn_prefill_backend")
+    upstream = definition(path, "_resolve_gdn_prefill_backend")
+    assert "pla" in {
+        node.value
+        for node in ast.walk(copied.returns)
+        if isinstance(node, ast.Constant)
+    }
+    copied.returns = upstream.returns
+    copied_doc = ast.get_docstring(copied, clean=False)
+    upstream_doc = ast.get_docstring(upstream, clean=False)
+    assert (
+        copied_doc.split("    # PPU MODIFICATION: begin")[0].rstrip()
+        == upstream_doc.rstrip()
+    )
+    copied.body[0] = upstream.body[0]
+    ppu_branches = [
+        node
+        for node in copied.body
+        if isinstance(node, ast.If)
+        and ast.unparse(node.test) == "current_platform.is_ppu()"
+    ]
+    assert len(ppu_branches) == 1
+    assert ast.unparse(ppu_branches[0].body[0].test) == (
+        "backend in ('pla', 'auto') and _pla_prefill_supported(vllm_config)"
+    )
+    assert ast.unparse(ppu_branches[0].body[-1]) == "return (backend, 'triton')"
+    copied.body.remove(ppu_branches[0])
+    assert ast.dump(copied) == ast.dump(upstream)
 
 
 def test_aiter_backend_has_a_log_name():

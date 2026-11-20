@@ -18,7 +18,7 @@ schema = 1
 
 # The exact upstream vLLM tag the corpus is translated from. Bumping this means
 # re-running tools/port_upstream_kernels.py and reviewing the diff.
-upstream_ref = "6044ab06099025db08188dc44ffac45268f5b3bd"
+upstream_ref = "80ca61b6d9b9349c9b50b064f6af275be3c78d04"
 
 # Compiled tiers, in the order CMake receives them. `x` must never appear here.
 # Must stay above [tiers]: a bare key after a table header belongs to that table.
