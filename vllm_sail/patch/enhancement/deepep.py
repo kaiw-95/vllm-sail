@@ -285,6 +285,12 @@ def _maybe_make_prepare_finalize_body(
     elif moe.use_fi_nvl_two_sided_kernels:
         assert quant_config is not None
         prepare_finalize = FlashInferNVLinkTwoSidedPrepareAndFinalize(
+            max_num_tokens=(
+                get_current_vllm_config().scheduler_config.max_num_batched_tokens
+            ),
+            top_k=moe.experts_per_token,
+            num_experts=moe.num_experts,
+            hidden_size=moe.hidden_dim,
             num_dispatchers=all2all_manager.world_size,
         )
 
@@ -374,13 +380,7 @@ def maybe_roundup_layer_hidden_size(hidden_size, act_dtype, moe_parallel_config)
 _CONSUMERS = {
     "maybe_make_prepare_finalize": [
         "vllm.model_executor.layers.fused_moe.eep_reconfigure",
-        "vllm.model_executor.layers.fused_moe.oracle.fp8",
-        "vllm.model_executor.layers.fused_moe.oracle.w4a8_int8",
-        "vllm.model_executor.layers.fused_moe.oracle.unquantized",
-        "vllm.model_executor.layers.fused_moe.oracle.nvfp4",
-        "vllm.model_executor.layers.fused_moe.oracle.w4a8",
-        "vllm.model_executor.layers.fused_moe.oracle.mxfp4",
-        "vllm.model_executor.layers.fused_moe.oracle.int8",
+        "vllm.model_executor.layers.fused_moe.oracle.base",
         "vllm.model_executor.layers.quantization.utils.humming.moe",
         "vllm.model_executor.layers.quantization.modelopt_block_quant",
     ],

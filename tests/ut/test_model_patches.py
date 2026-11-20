@@ -29,7 +29,12 @@ from types import SimpleNamespace as NS
 import pytest
 
 from tests.support.modules import load_patch
-from tests.support.source import assert_accepts_upstream_keywords, definition, function
+from tests.support.source import (
+    assert_accepts_upstream_keywords,
+    definition,
+    function,
+    load_moe_oracle,
+)
 
 MODELS_PATCH_DIR = (
     pathlib.Path(__file__).parents[2] / "vllm_sail" / "patch" / "enhancement" / "models"
@@ -1303,11 +1308,15 @@ def test_real_mxfp4_oracle_rejects_marlin_compute_and_keeps_auto_fallback(
             )
         },
     )
-    fmt = NS(Standard="standard", BatchedExperts="batched")
+    fmt = function(
+        upstream_source_root / "vllm/model_executor/layers/fused_moe/modular_kernel.py",
+        "FusedMoEActivationFormat",
+        {"Enum": Enum},
+    )
     config = NS(
         moe_backend="marlin" if explicit else "auto",
         is_lora_enabled=False,
-        moe_parallel_config=NS(use_batched_activation_format=batched),
+        activation_format=fmt.BatchedExperts if batched else fmt.Standard,
     )
     admission = function(
         upstream_source_root / "vllm/model_executor/layers/fused_moe/modular_kernel.py",
@@ -1338,13 +1347,10 @@ def test_real_mxfp4_oracle_rejects_marlin_compute_and_keeps_auto_fallback(
         "logger": NS(info_once=lambda *a, **kw: None, debug_once=lambda *a, **kw: None),
     }
     path = upstream_source_root / "vllm/model_executor/layers/fused_moe/oracle/mxfp4.py"
+    load_moe_oracle(path, "Mxfp4MoEKernelOracle", namespace)
     for name in (
-        "_make_log_backend",
-        "_make_log_unsupported",
         "_requested_kernel_cls",
-        "_return_or_raise",
         "_filter_by_activation",
-        "_activation_format_for_config",
         "_mxfp4_quant_keys_for_experts",
         "_validate_mxfp4_experts_config",
     ):
@@ -1691,6 +1697,157 @@ def test_nvfp4_non_ppu_selector_delegates_and_preserves_exception_identity(
     with pytest.raises(RuntimeError) as raised:
         linear.init_nvfp4_linear_kernel(use_a16=True)
     assert raised.value is error
+
+
+def _nvfp4_cutlass_bias_boundary(root, capability, padded_rows, padded_k, fail_at=None):
+    """真实 class、padding/slice helpers；tensor、native 量化/GEMM 与支持查询是替身。"""
+    events = []
+    error = RuntimeError("NVFP4 native boundary failed")
+    dtype = object()
+
+    def record(stage, *args):
+        events.append((stage, *args))
+        if stage == fail_at:
+            raise error
+
+    class Tensor:
+        def __init__(self, shape):
+            self.shape, self.dtype = shape, dtype
+
+        def __getitem__(self, key):
+            record("slice", self, key)
+            assert key[0] is Ellipsis and key[1] == slice(None, 80)
+            return Tensor((*self.shape[:-1], 80))
+
+        def contiguous(self):
+            record("contiguous", self)
+            return self
+
+        def __add__(self, other):
+            record("add", self, other)
+            return Tensor(self.shape)
+
+        def view(self, *shape):
+            record("view", self, shape)
+            return Tensor(shape)
+
+    x = Tensor((2, 3, 64))
+    layer = NS(
+        output_size_per_partition=80,
+        input_size_per_partition=64,
+        weight=Tensor((96 if padded_rows else 80, 48 if padded_k else 32)),
+        weight_scale=object(),
+        input_global_scale_inv=object(),
+        alpha=object(),
+    )
+    packed, scales = object(), object()
+    bias = object()
+
+    def quantize(inputs, scale, **kwargs):
+        record("quantize", inputs, scale, kwargs)
+        return packed, scales
+
+    def gemm(*args, **kwargs):
+        record("gemm", args, kwargs)
+        return Tensor((6, layer.weight.shape[0]))
+
+    kernel_root = root / "vllm/model_executor/kernels/linear/nvfp4"
+    utils = root / "vllm/model_executor/layers/quantization/utils/nvfp4_utils.py"
+    base_init = function(kernel_root / "base.py", "NvFp4LinearKernel.__init__", {})
+    base = type("NvFp4LinearKernel", (), {"__init__": base_init})
+    namespace = {
+        "NvFp4LinearKernel": base,
+        "current_platform": NS(
+            is_device_capability_family=lambda family: capability // 10 == family // 10
+        ),
+        "cutlass_fp4_supported": lambda: True,
+        "scaled_fp4_quant": quantize,
+        "cutlass_scaled_fp4_mm": gemm,
+        "nvfp4_weight_padding_bytes": function(utils, "nvfp4_weight_padding_bytes", {}),
+        "slice_nvfp4_output": function(utils, "slice_nvfp4_output", {}),
+    }
+    cls = function(kernel_root / "cutlass.py", "CutlassNvFp4LinearKernel", namespace)
+    config = object()
+    kernel = cls(config)
+    assert kernel.config is config
+    assert kernel.bias_epilogue is (capability // 10 == 12)
+    return NS(
+        kernel=kernel,
+        x=x,
+        layer=layer,
+        bias=bias,
+        packed=packed,
+        scales=scales,
+        dtype=dtype,
+        events=events,
+        error=error,
+    )
+
+
+@pytest.mark.upstream_source
+@pytest.mark.parametrize("capability", [80, 89, 100, 120])
+@pytest.mark.parametrize("padded_rows", [False, True])
+@pytest.mark.parametrize("padded_k", [False, True])
+@pytest.mark.parametrize("with_bias", [False, True])
+def test_nvfp4_cutlass_bias_applies_once_after_padding_or_in_epilogue(
+    upstream_source_root, capability, padded_rows, padded_k, with_bias
+):
+    """仅验证真实 provider 的调用契约；模拟支持查询不代表该设备支持 CUTLASS FP4。"""
+    f = _nvfp4_cutlass_bias_boundary(
+        upstream_source_root, capability, padded_rows, padded_k
+    )
+    bias = f.bias if with_bias else None
+    result = f.kernel.apply_weights(f.layer, f.x, bias)
+    fuse = with_bias and capability == 120 and not padded_rows
+    assert result.shape == (2, 3, 80) and result.dtype is f.dtype
+    assert f.events[0] == (
+        "quantize",
+        f.x,
+        f.layer.input_global_scale_inv,
+        dict(
+            is_sf_swizzled_layout=True,
+            backend="cutlass",
+            padded_n=96 if padded_k else 64,
+        ),
+    )
+    assert f.events[1] == (
+        "gemm",
+        (
+            f.packed,
+            f.layer.weight,
+            f.scales,
+            f.layer.weight_scale,
+            f.layer.alpha,
+            f.dtype,
+        ),
+        {"bias": bias if fuse else None},
+    )
+    stages = [event[0] for event in f.events]
+    assert stages == [
+        "quantize",
+        "gemm",
+        *(["slice", "contiguous"] if padded_rows else []),
+        *(["add"] if with_bias and not fuse else []),
+        "view",
+    ]
+    additions = [event for event in f.events if event[0] == "add"]
+    assert len(additions) == int(with_bias and not fuse)
+    if additions:
+        assert additions[0][1].shape == (6, 80) and additions[0][2] is bias
+
+
+@pytest.mark.upstream_source
+@pytest.mark.parametrize("fail_at", ["quantize", "gemm", "add", "view"])
+def test_nvfp4_cutlass_bias_preserves_native_failure_and_stops_later_stages(
+    upstream_source_root, fail_at
+):
+    f = _nvfp4_cutlass_bias_boundary(upstream_source_root, 120, True, True, fail_at)
+    with pytest.raises(RuntimeError) as raised:
+        f.kernel.apply_weights(f.layer, f.x, f.bias)
+    assert raised.value is f.error
+    stages = [event[0] for event in f.events]
+    complete = ["quantize", "gemm", "slice", "contiguous", "add", "view"]
+    assert stages == complete[: complete.index(fail_at) + 1]
 
 
 @pytest.mark.upstream_source

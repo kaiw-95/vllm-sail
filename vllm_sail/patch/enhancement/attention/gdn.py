@@ -817,7 +817,9 @@ def forward_pla(
         output_final_state=output_final_state,
     )
     if final_state is not None:
-        final_state = final_state.transpose(-1, -2)
+        # MRv2 scatter_states copies each [H, DV, DK] row as a flat span.
+        # Materialize the layout conversion before handing it to that consumer.
+        final_state = final_state.transpose(-1, -2).contiguous()
     if core_attn_out is not None:
         o_flat = o.reshape(-1)
         co_flat = core_attn_out.reshape(-1)

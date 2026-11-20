@@ -194,6 +194,13 @@ def test_complete_reinitialization_body_keeps_only_context_invalidation(
         "max_model_len != self.input_batch.max_model_len"
     )
     branch.test.values.pop()
+    # Extraction out of the class changes only docstring indentation.
+    import inspect
+
+    assert inspect.cleandoc(ast.get_docstring(copied, clean=False)) == inspect.cleandoc(
+        ast.get_docstring(original, clean=False)
+    )
+    copied.body[0] = original.body[0]
     assert ast.dump(copied, include_attributes=False) == ast.dump(
         original, include_attributes=False
     )

@@ -306,6 +306,7 @@ def test_gemm_rs_initialization_keeps_collective_fallback(
 
     gemm_module = "vllm.model_executor.kernels.linear.cute_dsl.gemm_rs_ar"
     if ppu:
+        modules(gemm_module.rpartition(".")[0])
 
         class Forbidden(importlib.abc.MetaPathFinder):
             def find_spec(self, fullname, path=None, target=None):
@@ -637,7 +638,7 @@ def test_real_minimax_pp_transport_restores_residual_aux_and_token_extent(
     hidden = Tensor([[i, i + 1] for i in range(5)])
     residual = shifted(hidden, 100)
     positions = object()
-    padding = object()
+    padding = Tensor([[i] for i in range(8)])
     context = NS(is_padding=padding)
     shard_mask = object()
 
@@ -661,7 +662,7 @@ def test_real_minimax_pp_transport_restores_residual_aux_and_token_extent(
         )
 
     def mask(actual, value):
-        assert actual is padding and value is hidden
+        assert actual.rows == padding.rows[: hidden.shape[0]] and value is hidden
         events.append(("mask", actual))
         return shard_mask
 

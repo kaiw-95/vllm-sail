@@ -6,7 +6,7 @@
 # tiers. vllm_sail/native/stubs.py registers each one so a call fails
 # with a named NotImplementedError instead of an AttributeError, and so
 # capability probes answer False instead of raising.
-# Upstream vLLM 5b62a2853d017f71eca4509fad0fdc9a5e4dc65f; compiled tiers a.
+# Upstream vLLM 047f6bfbb22cf4815162125f107e6dd90c72478a; compiled tiers a.
 
 [[op]]
 namespace = "_C_custom_ar"
@@ -139,7 +139,7 @@ reason = "not declared in csrc/upstream/manifest.toml"
 [[op]]
 namespace = "_C"
 name = "cutlass_scaled_fp4_mm"
-schema = "cutlass_scaled_fp4_mm(Tensor! out, Tensor a, Tensor b,                      Tensor block_scale_a, Tensor block_scale_b,                      Tensor alpha) -> ()"
+schema = "cutlass_scaled_fp4_mm(Tensor! out, Tensor a, Tensor b,                      Tensor block_scale_a, Tensor block_scale_b,                      Tensor alpha, Tensor? bias=None) -> ()"
 kind = "compute"
 tier = "x"
 reason = "CUTLASS / CuTe in the include closure"
@@ -399,6 +399,14 @@ schema = "kimi_k3_attn_res(Tensor! prefix, Tensor? delta, Tensor! blocks, Tensor
 kind = "compute"
 tier = "unclaimed"
 reason = "not declared in csrc/upstream/manifest.toml"
+
+[[op]]
+namespace = "_moe_C"
+name = "lut_b_moe_gemm"
+schema = "lut_b_moe_gemm(Tensor a, Tensor a_scales, Tensor b, Tensor! c, Tensor? topk_weights, Tensor sorted_token_ids, Tensor expert_ids, Tensor num_tokens_post_padded, int top_k) -> ()"
+kind = "compute"
+tier = "x"
+reason = "SM100 tensor memory -- no PPU analogue; cp.async pipeline primitives, __pipeline_*; inline asm volatile PTX"
 
 [[op]]
 namespace = "_C"

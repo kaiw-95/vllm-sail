@@ -792,8 +792,9 @@ def test_v41_draft_preserves_its_own_execution(v41_draft):
 @pytest.mark.parametrize("dense_scale", ["weight_scale", "weight_scale_inv"])
 @pytest.mark.parametrize("mega", [False, True])
 @pytest.mark.parametrize("draft_experts", [0, 2])
+@pytest.mark.parametrize("completeness_check", [False, True])
 def test_v41_draft_loads_scales_from_actual_destinations(
-    v41_draft, expert_dtype, dense_scale, mega, draft_experts
+    v41_draft, expert_dtype, dense_scale, mega, draft_experts, completeness_check
 ):
     """Reproduce the fused attention KeyError and cover experts, shared layers and heads."""
     cls, provider = v41_draft
@@ -817,6 +818,7 @@ def test_v41_draft_loads_scales_from_actual_destinations(
     provider.get_tensor_model_parallel_rank = lambda: 1
     provider.default_weight_loader = lambda p, w: calls.append((p.name, w, (), {}))
     provider.logger = SimpleNamespace(info_once=lambda *args: None)
+    provider.is_mtp_completeness_check_enabled = lambda: completeness_check
     provider._duplicate_context_wkv_weights = lambda weights, count: weights
     provider.extract_layer_index = lambda name: int(name.split(".")[2])
 
@@ -886,6 +888,7 @@ def test_v41_draft_loads_scales_from_actual_destinations(
         expert_dtype=expert_dtype,
         num_attention_heads=64,
     )
+    confidence_head = object()
     model.model = SimpleNamespace(
         layers=[
             SimpleNamespace(
@@ -895,7 +898,7 @@ def test_v41_draft_loads_scales_from_actual_destinations(
                 )
             )
         ],
-        confidence_head=object(),
+        confidence_head=confidence_head,
     )
     model.linear_scale_name = "weight_scale_inv"
     model.pad_shared_expert = False
@@ -925,7 +928,9 @@ def test_v41_draft_loads_scales_from_actual_destinations(
     assert model.load_weights(iter(stream)) == set(params)
     assert counts == [draft_experts or 384]
     assert processed == []  # The main loader defers processing to the model runner.
-    assert model.model.confidence_head is None
+    assert model.model.confidence_head is (
+        None if completeness_check else confidence_head
+    )
     assert len(calls) == len(pairs)
     for call, (_, target, shard), weight in zip(calls, pairs, weights, strict=False):
         assert call[:2] == (target, weight)
