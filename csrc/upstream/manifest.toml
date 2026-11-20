@@ -18,7 +18,7 @@ schema = 1
 
 # The exact upstream vLLM tag the corpus is translated from. Bumping this means
 # re-running tools/port_upstream_kernels.py and reviewing the diff.
-upstream_ref = "8b10bda57ceab3a741d2fb3718af48cef691023e"
+upstream_ref = "ca5c2d7843a5de396f1a3e4aee137fa16decd720"
 
 # Compiled tiers, in the order CMake receives them. `x` must never appear here.
 # Must stay above [tiers]: a bare key after a table header belongs to that table.
@@ -141,8 +141,8 @@ _moe_C_stable_libtorch = "_upstream_moe_C"
 "#include <hggc_runtime.h>" = "#include <hggc_runtime.h>\n#if defined(__HGGCCC__)\n#include <hggc_pipeline_primitives.h>\n#endif"
 "  const uint32_t smem_addr =" = "#if defined(__HGGCCC__)\n  __pipeline_memcpy_async(smem_ptr, gmem_ptr, 16);\n#else\n  const uint32_t smem_addr ="
 "               : \"r\"(smem_addr), \"l\"(gmem_ptr));" = "               : \"r\"(smem_addr), \"l\"(gmem_ptr));\n#endif"
-"  asm volatile(\"cp.async.commit_group;\\n\" ::);" = "#if defined(__HGGCCC__)\n  __pipeline_commit();\n#else\n  asm volatile(\"cp.async.commit_group;\\n\" ::);\n#endif"
-"  asm volatile(\"cp.async.wait_all;\\n\" ::: \"memory\");" = "#if defined(__HGGCCC__)\n  __pipeline_commit();\n  __pipeline_wait_prior(0);\n#else\n  asm volatile(\"cp.async.wait_all;\\n\" ::: \"memory\");\n#endif"
+"  asm volatile(\"cp.async.commit_group;\u005Cn\" ::);" = "#if defined(__HGGCCC__)\n  __pipeline_commit();\n#else\n  asm volatile(\"cp.async.commit_group;\u005Cn\" ::);\n#endif"
+"  asm volatile(\"cp.async.wait_all;\u005Cn\" ::: \"memory\");" = "#if defined(__HGGCCC__)\n  __pipeline_commit();\n  __pipeline_wait_prior(0);\n#else\n  asm volatile(\"cp.async.wait_all;\u005Cn\" ::: \"memory\");\n#endif"
 
 # ---------------------------------------------------------------------------
 # Tier a -- core inference.
