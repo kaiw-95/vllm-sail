@@ -34,6 +34,28 @@ def assert_topk(torch, logits, indices, lengths):
         torch.testing.assert_close(actual, expected, rtol=0, atol=0)
 
 
+@pytest.mark.parametrize("experts", [32, 128, 256])
+@pytest.mark.parametrize("groups", [1, 4])
+@pytest.mark.parametrize("scoring_func", [0, 1])
+def test_grouped_topk_padding_preserves_unpadded_routing(
+    topk_runtime, experts, groups, scoring_func
+):
+    """新增可选 mask 不改变有效 token 路由，padding 输出 -1 和零权重。"""
+    torch = topk_runtime
+    scores = torch.linspace(-1, 1, experts, device="cuda").repeat(4, 1)
+    bias = torch.zeros(experts, device="cuda")
+    args = (scores, groups, min(groups, 2), 8, True, 2.0, bias, scoring_func)
+    original_weights, original_ids = torch.ops._moe_C.grouped_topk(*args)
+    padding = torch.tensor([False, True, False, True], device="cuda")
+    weights, ids = torch.ops._moe_C.grouped_topk(*args, padding)
+    torch.testing.assert_close(
+        weights[~padding], original_weights[~padding], rtol=0, atol=0
+    )
+    torch.testing.assert_close(ids[~padding], original_ids[~padding], rtol=0, atol=0)
+    assert bool((weights[padding] == 0).all())
+    assert bool((ids[padding] == -1).all())
+
+
 @pytest.mark.parametrize("top_k", [512, 1024, 2048])
 @pytest.mark.parametrize("rows", [1, 64, 128])
 @pytest.mark.parametrize(

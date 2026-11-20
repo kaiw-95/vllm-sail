@@ -6,7 +6,7 @@
 # tiers. vllm_sail/native/stubs.py registers each one so a call fails
 # with a named NotImplementedError instead of an AttributeError, and so
 # capability probes answer False instead of raising.
-# Upstream vLLM 78161c28da3b17f95d27c16f7d329cc1f1987f27; compiled tiers a.
+# Upstream vLLM 8530a778f78dc7cd9a31e108ebc035c4b27ceb3c; compiled tiers a.
 
 [[op]]
 namespace = "_C_custom_ar"
@@ -271,6 +271,14 @@ schema = "fused_minimax_m3_dspark_context_kv(Tensor all_kv, Tensor k_norm_weight
 kind = "compute"
 tier = "unclaimed"
 reason = "not declared in csrc/upstream/manifest.toml"
+
+[[op]]
+namespace = "_C"
+name = "fused_mqa_topk_prefill"
+schema = "fused_mqa_topk_prefill(Tensor q, Tensor k, Tensor scales, Tensor weights, Tensor starts, Tensor ends, Tensor! out, Tensor! counter, Tensor! values, Tensor! indices, Tensor! retained, Tensor! retained_indices, Tensor! counts, Tensor! defer) -> ()"
+kind = "compute"
+tier = "x"
+reason = "SM100 tensor memory -- no PPU analogue; hand-written mma.sync / ldmatrix / wmma; inline asm volatile PTX"
 
 [[op]]
 namespace = "_C"

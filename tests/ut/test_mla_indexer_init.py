@@ -8,7 +8,7 @@ from types import SimpleNamespace as NS
 import pytest
 
 from tests.support.modules import load_patch
-from tests.support.source import assert_accepts_upstream_keywords
+from tests.support.source import assert_accepts_upstream_keywords, function
 
 PATCH = "vllm_sail/patch/enhancement/attention/mla_indexer.py"
 TARGET = "vllm.v1.attention.backends.mla.indexer"
@@ -141,6 +141,33 @@ def builder_factory(modules, patch_utils_module):
         return provider.DeepseekV32IndexerMetadataBuilder, calls
 
     return make
+
+
+@pytest.mark.upstream_source
+@pytest.mark.parametrize("capability", [80, 89])
+def test_fused_mqa_topk_schema_does_not_select_sm100_on_ppu(
+    upstream_source_root, capability
+):
+    """CUDA 兼容身份与 stub schema 不能绕过 SM100 的真实设备门控。"""
+
+    class Ops:
+        def __getattr__(self, name):
+            raise AssertionError("PPU 不应探测或调用未编译的 fused MQA op")
+
+    available = function(
+        upstream_source_root
+        / "vllm/model_executor/kernels/attention/dsa/fused_mqa_topk.py",
+        "fused_mqa_topk_available",
+        {
+            "current_platform": NS(
+                is_cuda=lambda: True,
+                is_device_capability_family=lambda family: capability // 10
+                == family // 10,
+            ),
+            "torch": NS(ops=NS(_C=Ops())),
+        },
+    )
+    assert available() is False
 
 
 def test_ppu_fp4_constructor_delegates_then_adds_fork_state(builder_factory):
