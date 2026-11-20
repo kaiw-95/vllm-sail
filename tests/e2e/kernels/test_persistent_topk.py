@@ -83,6 +83,44 @@ def test_aligned_stride_with_misaligned_base(topk_runtime, top_k, rows, offset):
     assert_topk(torch, logits, indices, lengths)
 
 
+@pytest.mark.parametrize("top_k", [512, 1024, 2048])
+@pytest.mark.parametrize("offset", [0, 1, 2])
+@pytest.mark.parametrize("rows", [1, 64, 128])
+def test_bf16_dtype_and_shifted_base_contract(topk_runtime, top_k, offset, rows):
+    """BF16 使用真实两字节输入；共享内存不足时必须显式拒绝。"""
+    torch = topk_runtime
+    width = 32769
+    storage = torch.empty((rows, width + 8), dtype=torch.bfloat16, device="cuda")
+    logits = storage[:, offset : width + offset]
+    values = torch.arange(width, dtype=torch.float32, device="cuda") / width
+    logits.copy_(values)
+    lengths = torch.full((rows,), width, dtype=torch.int32, device="cuda")
+    indices = torch.empty((rows, top_k), dtype=torch.int32, device="cuda")
+    workspace = torch.empty(1024 * 1024, dtype=torch.uint8, device="cuda")
+    props = torch.cuda.get_device_properties(logits.device)
+    if props.shared_memory_per_block_optin < 128 * 1024:
+        with pytest.raises(RuntimeError, match="requires 128 KiB shared memory"):
+            torch.ops._C.persistent_topk(
+                logits, lengths, indices, workspace, top_k, width
+            )
+        return
+    torch.ops._C.persistent_topk(logits, lengths, indices, workspace, top_k, width)
+    torch.cuda.synchronize()
+    assert_topk(torch, logits, indices, lengths)
+
+
+def test_bf16_strided_columns_are_rejected(topk_runtime):
+    torch = topk_runtime
+    logits = torch.empty((1, 2048), dtype=torch.bfloat16, device="cuda")[:, ::2]
+    lengths = torch.full((1,), 1024, dtype=torch.int32, device="cuda")
+    indices = torch.empty((1, 512), dtype=torch.int32, device="cuda")
+    workspace = torch.empty(1024 * 1024, dtype=torch.uint8, device="cuda")
+    with pytest.raises(
+        RuntimeError, match="bfloat16 logits columns must be contiguous"
+    ):
+        torch.ops._C.persistent_topk(logits, lengths, indices, workspace, 512, 1024)
+
+
 @pytest.mark.parametrize("top_k", [512, 2048])
 def test_misaligned_mixed_lengths_and_changed_graph_replay(topk_runtime, top_k):
     torch = topk_runtime

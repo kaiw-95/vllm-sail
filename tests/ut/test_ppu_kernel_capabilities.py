@@ -70,6 +70,7 @@ def complete_warmup_contract(modules, provider, worker, platform, *, entered=Non
     platform.is_rocm = lambda: False
     platform.is_device_capability_family = lambda _: False
     worker.use_v2_model_runner = True
+    modules("vllm.distributed.parallel_state", get_pp_group=lambda: ns(world_size=1))
     worker.model_runner.attn_groups = []
     worker.vllm_config.model_config = ns()
     worker.vllm_config.compilation_config = ns(cudagraph_capture_sizes=[])
@@ -103,6 +104,8 @@ def complete_warmup_contract(modules, provider, worker, platform, *, entered=Non
         "is_deep_gemm_supported": lambda: False,
         "has_flashinfer": lambda: False,
     }
+    # 纯替身没有 upstream helper；真实源码 provider 必须保留其集体决策实现。
+    provider.__dict__.setdefault("_warmup_flashinfer_attention", lambda worker: None)
     provider.__dict__.update(
         callbacks,
         current_platform=platform,
