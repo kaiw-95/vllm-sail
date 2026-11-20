@@ -248,7 +248,12 @@ def test_stub_falls_through_real_upstream_forward_to_normal_core(
     f = gdn_provider
     monkeypatch.setenv("VLLM_SAIL_USE_PLA", "0")
     layer = f.layer(None, f.config)
+    _exercise_real_gdn_forward(f, layer, None)
+
+
+def _exercise_real_gdn_forward(f, layer, qkvz_input):
     calls = []
+    projections = []
 
     class Tensor:
         dtype = "bf16"
@@ -275,7 +280,13 @@ def test_stub_falls_through_real_upstream_forward_to_normal_core(
     )
     f.torch.zeros = lambda *a, **kw: Tensor()
     f.torch.empty = lambda *a, **kw: Tensor()
-    layer.in_proj_qkvz = layer.in_proj_ba = lambda _: (Tensor(), None)
+
+    def project(name, value):
+        projections.append((name, value))
+        return Tensor(), None
+
+    layer.in_proj_qkvz = lambda value: project("qkvz", value)
+    layer.in_proj_ba = lambda value: project("ba", value)
     layer.split_ba = lambda _: (Tensor(), Tensor())
     layer._output_projection = lambda *a: "norm + output"
     layer.key_dim, layer.value_dim, layer.tp_size, layer.prefix = 256, 512, 1, "gdn"
@@ -284,8 +295,25 @@ def test_stub_falls_through_real_upstream_forward_to_normal_core(
         "QwenGatedDeltaNetAttention.forward_cuda",
         dict(torch=f.torch, _encode_layer_name=lambda name: name),
     )
-    assert forward(layer, Tensor()) == "norm + output"
+    hidden = Tensor()
+    assert forward(layer, hidden, qkvz_input=qkvz_input) == "norm + output"
     assert calls == ["normal core"]
+    assert projections == [
+        ("qkvz", hidden if qkvz_input is None else qkvz_input),
+        ("ba", hidden),
+    ]
+
+
+@pytest.mark.upstream_source
+@pytest.mark.parametrize("prequantized", [False, True])
+def test_qwen35_direct_cuda_entry_preserves_projection_inputs_and_ppu_core(
+    gdn_provider, monkeypatch, prequantized
+):
+    f = gdn_provider
+    monkeypatch.setenv("VLLM_SAIL_USE_PLA", "0")
+    layer = f.layer(None, f.config)
+    quantized = object() if prequantized else None
+    _exercise_real_gdn_forward(f, layer, quantized)
 
 
 @pytest.mark.upstream_source

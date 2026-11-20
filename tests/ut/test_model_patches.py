@@ -315,6 +315,7 @@ _EXPECTED_TARGETS = {
     "vllm.models.minimax_m3.nvidia.model._maybe_init_gemm_rs",
     "vllm.models.minimax_m3.nvidia.model._bind_gemm_rs",
     "vllm.models.minimax_m3.nvidia.model.MiniMAXGemmaRMSNorm.forward",
+    "vllm.model_executor.layers.linear.MinimaxM3QKVParallelLinearWithIndexer.__init__",
     "vllm.model_executor.models.qwen3_moe.Qwen3MoeSparseMoeBlock.__init__",
     "vllm.model_executor.models.qwen3_moe.Qwen3MoeDecoderLayer.__init__",
     "vllm.model_executor.models.qwen3_moe.Qwen3MoeModel.__init__",

@@ -32,6 +32,12 @@ def test_registered_finalize_retains_ordinary_ppu_path(modules, ppu):
         _bind_gemm_rs=unavailable,
     )
     modules(
+        "vllm.model_executor.layers.linear",
+        MinimaxM3QKVParallelLinearWithIndexer=type(
+            "IndexedQKV", (), {"__init__": unavailable}
+        ),
+    )
+    modules(
         "vllm.platforms", current_platform=NS(is_ppu=lambda: ppu, is_cuda=lambda: True)
     )
     load_patch("vllm_sail/patch/enhancement/models/minimax_m3.py")

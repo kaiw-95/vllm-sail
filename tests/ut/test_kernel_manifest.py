@@ -71,6 +71,52 @@ def test_upstream_ref_matches_the_verified_vllm_commit(shipped: m.Manifest) -> N
     assert shipped.upstream_ref == pin
 
 
+@pytest.mark.parametrize("operation,symbol", [("sum", "+="), ("or", "|=")])
+def test_histogram_warp_reduction_uses_hggc_shuffle_fallback(
+    shipped, operation, symbol
+):
+    """检查实际生成 header；CUDA 兼容架构标识不得绕过 HGGC 门控。"""
+    root = Path(__file__).resolve().parents[2]
+    source = (root / "csrc/upstream/topk_histogram_4096.cuh").read_text()
+    body = source.split(f"warp_reduce_{operation}_full(uint32_t v) {{", 1)[1].split(
+        "\n}", 1
+    )[0]
+    assert body.startswith(
+        "\n#if !defined(__HGGCCC__) && defined(COMPATIBLE_ARCH) && "
+        "(COMPATIBLE_ARCH >= 800)"
+    )
+    fallback = body.split("#else", 1)[1].split("#endif", 1)[0]
+    assert "kWarpSize >> 1; mask > 0; mask >>= 1" in fallback
+    assert f"v {symbol} __shfl_xor_sync(0xFFFFFFFF, v, mask);" in fallback
+    assert "return v;" in fallback
+    assert "constexpr uint32_t kWarpSize = 32;" in source
+    assert len(shipped.replace_text["csrc/topk_histogram_4096.cuh"]) == 2
+
+
+@pytest.mark.upstream_source
+def test_histogram_overlay_changes_only_real_upstream_architecture_guards(
+    shipped, upstream_source_root, tmp_path
+):
+    """对真实 header 执行生产 overlay；此处不模拟 SDK 或运行归约。"""
+    from vllm_sail.native import porting
+
+    path = "csrc/topk_histogram_4096.cuh"
+    source = (upstream_source_root / path).read_text()
+    # sailify 的架构标识映射先于 manifest overlay。
+    translated = source.replace("__CUDA_ARCH__", "COMPATIBLE_ARCH")
+    unit = tmp_path / "topk_histogram_4096.cuh"
+    unit.write_text(translated)
+    replacements = shipped.replace_text[path]
+    expected = translated
+    for original, adapted in replacements.items():
+        assert translated.count(original) == 1
+        assert adapted == original.replace("#if ", "#if !defined(__HGGCCC__) && ", 1)
+        expected = expected.replace(original, adapted)
+    porting._replace_text([unit], tmp_path, {path: replacements})
+    assert unit.read_text() == expected
+    assert (upstream_source_root / path).read_text() == source
+
+
 def test_every_tier_and_hazard_is_declared(shipped: m.Manifest) -> None:
     assert shipped.tiers
     assert shipped.hazards

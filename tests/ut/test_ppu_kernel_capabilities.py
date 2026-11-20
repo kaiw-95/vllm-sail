@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from tests.support.modules import load_patch
-from tests.support.source import function
+from tests.support.source import definition, function
 
 ROOT = Path(__file__).parents[2]
 
@@ -58,6 +58,273 @@ def test_optional_gate_consumer_inventory_matches_upstream(
                         discovered[alias.name].add(module)
             pending.extend(ast.iter_child_nodes(node))
     assert discovered == {name: set(consumers) for name, consumers in inventory.items()}
+
+
+@pytest.mark.upstream_source
+@pytest.mark.parametrize("capability", [80, 89])
+@pytest.mark.parametrize("quantized", [False, True])
+def test_qwen35_real_budget_blocks_flashinfer_and_preserves_norm_fallback(
+    modules, upstream_source_root, capability, quantized
+):
+    ns = types.SimpleNamespace
+    source = upstream_source_root / "vllm"
+    fusion = source / "compilation/passes/fusion/allreduce_rms_fusion.py"
+    mapping = next(
+        ast.literal_eval(node.value)
+        for node in ast.parse(fusion.read_text()).body
+        if isinstance(node, ast.AnnAssign)
+        and isinstance(node.target, ast.Name)
+        and node.target.id == "FI_ALLREDUCE_FUSION_MAX_SIZE_MB"
+    )
+    platform = ns(
+        is_cuda=lambda: True,
+        get_device_capability=lambda: ns(to_int=lambda: capability),
+    )
+    modules("vllm.platforms", current_platform=platform)
+    modules(
+        "vllm.compilation.passes.fusion.allreduce_rms_fusion",
+        FI_ALLREDUCE_FUSION_MAX_SIZE_MB=mapping,
+    )
+    budget = function(
+        source / "config/compilation.py",
+        "PassConfig.default_fi_allreduce_fusion_max_size_mb",
+        {},
+    )
+    assert budget() == {}
+    assert mapping[90][2] > 0
+    pass_config = ns(default_fi_allreduce_fusion_max_size_mb=budget)
+    modules("vllm.config.compilation", PassConfig=pass_config)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("空 capability budget 不得创建 workspace 或启动融合 kernel")
+
+    hidden = ns(
+        is_cuda=True,
+        dim=lambda: 2,
+        is_contiguous=lambda: True,
+        dtype="bf16",
+        shape=(1, 128),
+        element_size=lambda: 2,
+    )
+    residual, weight, scale = object(), object(), object()
+    reduced = ns(dtype="bf16", shape=hidden.shape)
+    normed, new_residual, codes = object(), object(), object()
+    calls = []
+
+    def allreduce(value):
+        assert value is hidden
+        calls.append("allreduce")
+        return reduced
+
+    class Norm:
+        reduce_inputs = True
+        variance_epsilon = 1e-6
+
+        def __call__(self, value, skip):
+            assert value is reduced and skip is residual
+            calls.append("norm")
+            return normed, new_residual
+
+    norm = Norm()
+    norm.weight = weight
+    torch = ns(
+        bfloat16="bf16",
+        float16="fp16",
+        tensor=lambda *a, **kw: ns(element_size=lambda: 2),
+    )
+    if quantized:
+        path = source / "models/qwen3_5/nvidia/ops/fused_allreduce_norm_quant.py"
+        namespace = dict(
+            torch=torch,
+            PassConfig=pass_config,
+            _workspace_unsupported=False,
+            fi_ar=ns(fi_ar_available=True, get_fi_ar_quant_workspace=forbidden),
+            get_tensor_model_parallel_world_size=lambda: 2,
+        )
+        namespace["_get_workspace"] = function(path, "_get_workspace", namespace)
+        compute = function(path, "fused_allreduce_gemma_rms_norm_quant", namespace)
+        assert compute(hidden, residual, weight, 1e-6, scale, "fp8") is None
+
+        def norm_quant(value, skip, gamma, eps, actual_scale, nvfp4, write_y):
+            assert value is reduced and skip is residual and gamma is weight
+            assert eps == 1e-6 and actual_scale is scale
+            assert not nvfp4 and write_y
+            calls.append("norm_quant")
+            return codes, None, normed
+
+        forward = function(
+            source / "models/qwen3_5/nvidia/model.py",
+            "Qwen3_5RMSNorm.forward_fused",
+            dict(
+                _norm_quant_key=lambda _: "fp8",
+                kNvfp4Dynamic="nvfp4",
+                fused_allreduce_gemma_rms_norm_quant=compute,
+                tensor_model_parallel_all_reduce=allreduce,
+                gemma_add_rms_norm_quant=norm_quant,
+                QuantizedActivation=ns,
+            ),
+        )
+        qa, y, skip = forward(
+            norm, hidden, residual, ns(input_scale=scale), write_y=True
+        )
+        assert qa.data is codes and qa.scale is None and y is normed
+        assert qa.orig_dtype == reduced.dtype and qa.orig_shape == reduced.shape
+        assert qa.quant_key == "fp8" and skip is residual
+        assert calls == ["allreduce", "norm_quant"]
+    else:
+        path = source / "model_executor/layers/fused_allreduce_gemma_rms_norm.py"
+        namespace = dict(
+            torch=torch,
+            _FI_SUPPORTED_DTYPES=("bf16", "fp16"),
+            MiB=1024 * 1024,
+            flashinfer_trtllm_fused_allreduce_norm=forbidden,
+            get_fi_ar_workspace=forbidden,
+            _AR_RESIDUAL_RMS_NORM=object(),
+            get_tensor_model_parallel_world_size=lambda: 2,
+            _can_use_aiter_fused_ar_rms=lambda _: False,
+            tensor_model_parallel_all_reduce=allreduce,
+        )
+        namespace["_max_token_num"] = function(path, "_max_token_num", namespace)
+        namespace["_can_use_flashinfer"] = function(
+            path, "_can_use_flashinfer", namespace
+        )
+        compute = function(path, "fused_allreduce_gemma_rms_norm", namespace)
+        assert compute(hidden, residual, norm) == (normed, new_residual)
+        assert calls == ["allreduce", "norm"]
+
+
+@pytest.mark.upstream_source
+@pytest.mark.parametrize("missing_shard", [None, "q", "index_g"])
+def test_step5_real_parent_tracks_complete_and_partial_reload(
+    upstream_source_root, missing_shard
+):
+    """执行完整类及真实父类 loader；存储拷贝由严格边界 double 记录。"""
+    ns = types.SimpleNamespace
+    linear = upstream_source_root / "vllm/model_executor/layers/linear.py"
+    model = upstream_source_root / "vllm/models/step5/nvidia/model.py"
+    namespace = dict(
+        ColumnParallelLinear=type("ColumnParallelLinear", (), {}),
+        BlockQuantScaleParameter=type("BlockQuantScaleParameter", (), {}),
+    )
+    classes = [
+        definition(linear, "StackedColumnParallelLinear"),
+        definition(linear, "QKVParallelLinear"),
+        definition(model, "Step5FusedQKVIndexerLinear"),
+    ]
+    tree = ast.Module(
+        body=[
+            ast.ImportFrom(
+                module="__future__",
+                names=[ast.alias(name="annotations")],
+                level=0,
+            ),
+            *classes,
+        ],
+        type_ignores=[],
+    )
+    exec(compile(ast.fix_missing_locations(tree), str(model), "exec"), namespace)
+    cls = namespace["Step5FusedQKVIndexerLinear"]
+    layer = object.__new__(cls)
+    layer.loaded_shard_ids = {}
+    layer.num_heads = layer.num_kv_heads = 2
+    layer.head_size = layer.v_head_size = layer.proxy_dim = 1
+    layer.num_kv_head_replicas = layer.index_kv_head_replicas = 1
+    layer.local_index_q_heads, layer.local_index_kv_heads = 2, 1
+    layer.local_index_groups = 1
+    layer.local_gate_size = 2
+    layer.index_group_start = layer.tp_rank = 0
+    layer.qkv_size = 6
+    calls = []
+
+    class Storage:
+        def narrow(self, dim, offset, size):
+            assert dim == 0
+            return ns(copy_=lambda source: calls.append((offset, size, source)))
+
+    param = ns(
+        data=Storage(),
+        load_qkv_weight=lambda **kwargs: calls.append(kwargs),
+    )
+    layer.named_parameters = lambda: iter([("weight", param)])
+    incoming = ns(narrow=lambda dim, offset, size: (dim, offset, size))
+
+    def load(omit=None):
+        calls.clear()
+        for shard in cls.shard_ids:
+            if shard != omit:
+                layer.weight_loader_v2(param, incoming, shard)
+        assert layer.loaded_shard_ids == {
+            "weight": set(cls.shard_ids) - ({omit} if omit else set()),
+        }
+
+    with pytest.raises(NotImplementedError, match="pre-fused"):
+        layer.weight_loader_v2(param, incoming, None)
+    with pytest.raises(ValueError, match="Shard id"):
+        layer.weight_loader_v2(param, incoming, "unknown")
+    assert layer.loaded_shard_ids == {} and calls == []
+    load()
+    assert calls[:3] == [
+        dict(
+            loaded_weight=incoming,
+            num_heads=1,
+            shard_id=shard,
+            shard_offset=offset,
+            shard_size=2,
+        )
+        for shard, offset in [("q", 0), ("k", 2), ("v", 4)]
+    ]
+    assert calls[3:] == [
+        (6, 2, (0, 0, 2)),
+        (8, 1, (0, 0, 1)),
+        (9, 1, (0, 0, 1)),
+        (10, 2, (0, 0, 2)),
+    ]
+    layer.assert_fully_loaded("layers.0.qkv_indexer_proj.weight")
+    assert layer.loaded_shard_ids == {}
+    load(missing_shard)
+    if missing_shard is None:
+        layer.assert_fully_loaded("reload.weight")
+    else:
+        with pytest.raises(ValueError, match=missing_shard):
+            layer.assert_fully_loaded("reload.weight")
+    assert layer.loaded_shard_ids == {}
+    layer.validate_shard_id("index_q", param)
+    layer.reset_load_state()
+    assert layer.loaded_shard_ids == {}
+    load()
+    layer.assert_fully_loaded("reload.weight")
+    assert layer.loaded_shard_ids == {}
+
+
+@pytest.mark.upstream_source
+@pytest.mark.parametrize("pp_size", [1, 2, 4])
+@pytest.mark.parametrize(
+    "ep,tp_size,backend,expected",
+    [
+        (True, 4, "deep_gemm_mega_moe", True),
+        (False, 4, "deep_gemm_mega_moe", False),
+        (True, 1, "deep_gemm_mega_moe", False),
+        (True, 4, "auto", False),
+    ],
+)
+def test_step5_sequence_parallel_keeps_ep_tp_backend_gate_with_pipeline(
+    upstream_source_root, pp_size, ep, tp_size, backend, expected
+):
+    ns = types.SimpleNamespace
+    resolve = function(
+        upstream_source_root / "vllm/models/step5/nvidia/model.py",
+        "_step5_use_sequence_parallel",
+        {},
+    )
+    config = ns(
+        parallel_config=ns(
+            pipeline_parallel_size=pp_size,
+            tensor_parallel_size=tp_size,
+            enable_expert_parallel=ep,
+        ),
+        kernel_config=ns(moe_backend=backend),
+    )
+    assert resolve(config) is expected
 
 
 def complete_warmup_contract(modules, provider, worker, platform, *, entered=None):

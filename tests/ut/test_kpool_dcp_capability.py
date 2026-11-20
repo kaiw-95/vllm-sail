@@ -14,6 +14,7 @@ def kpool(modules):
         calls = []
         modules(
             "torch",
+            float32="fp32",
             ops=NS(
                 vllm=NS(
                     ppu_sparse_attn_indexer_kpool=lambda *args: calls.append(args)
@@ -75,6 +76,89 @@ def test_int8_dcp_fails_before_accessing_or_mutating_cache(kpool, method):
     with pytest.raises(NotImplementedError, match="decode context parallel size 1"):
         getattr(layer, method)(*[object() for _ in range(4)])
     assert calls == []
+
+
+@pytest.mark.parametrize("method", ["forward_ppu", "forward_native"])
+@pytest.mark.parametrize("requested,producer", [("fp32", "bf16"), ("bf16", "fp32")])
+def test_int8_dtype_mismatch_fails_before_cache_access(
+    kpool, method, requested, producer
+):
+    cls, calls = kpool()
+    layer = cls()
+    layer.dcp_world_size = 1
+    layer.logits_dtype = requested
+    with pytest.raises(ValueError, match="must match the producer weights dtype"):
+        getattr(layer, method)(object(), object(), object(), NS(dtype=producer))
+    assert calls == []
+
+
+@pytest.mark.parametrize("dtype", ["fp32", "bf16"])
+def test_int8_matching_dtype_preserves_inputs_and_tail_coordinates(kpool, dtype):
+    cls, calls = kpool()
+    layer = cls()
+    layer.dcp_world_size = 1
+    layer.logits_dtype = dtype
+    layer.k_cache = NS(prefix="indexer", kv_cache=object())
+    layer.tail_cache = NS(prefix="tail", kv_cache=object())
+    for field in (
+        "quant_block_size",
+        "scale_fmt",
+        "topk_tokens",
+        "head_dim",
+        "max_pool_len",
+        "max_total_seq_len",
+        "topk_indices_buffer",
+        "skip_k_cache_insert",
+        "use_fp4_cache",
+    ):
+        setattr(layer, field, object())
+    hidden, q, scale, k, weights = (
+        object(),
+        object(),
+        object(),
+        object(),
+        NS(dtype=dtype),
+    )
+    gate, ape, positions = object(), object(), object()
+    assert (
+        layer.forward_ppu(
+            hidden,
+            (q, scale),
+            k,
+            weights,
+            gate_score=gate,
+            compress_ape=ape,
+            positions=positions,
+            index_kpool=2,
+        )
+        == "int8"
+    )
+    assert calls == [
+        (
+            hidden,
+            "indexer",
+            layer.k_cache.kv_cache,
+            q,
+            scale,
+            k,
+            weights,
+            layer.quant_block_size,
+            layer.scale_fmt,
+            layer.topk_tokens,
+            layer.head_dim,
+            layer.max_pool_len,
+            layer.max_total_seq_len,
+            layer.topk_indices_buffer,
+            layer.skip_k_cache_insert,
+            layer.use_fp4_cache,
+            gate,
+            ape,
+            2,
+            positions,
+            layer.tail_cache.kv_cache,
+            "tail",
+        )
+    ]
 
 
 def test_fp8_dcp_keeps_upstream_dispatch(kpool):

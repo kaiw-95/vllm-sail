@@ -18,7 +18,7 @@ schema = 1
 
 # The exact upstream vLLM tag the corpus is translated from. Bumping this means
 # re-running tools/port_upstream_kernels.py and reviewing the diff.
-upstream_ref = "80ca61b6d9b9349c9b50b064f6af275be3c78d04"
+upstream_ref = "7663a8c524c056493e4924fdd851025de84ac91e"
 
 # Compiled tiers, in the order CMake receives them. `x` must never appear here.
 # Must stay above [tiers]: a bare key after a table header belongs to that table.
@@ -72,6 +72,12 @@ _moe_C_stable_libtorch = "_upstream_moe_C"
 # Each replacement must match exactly once after sailify, or generation fails.
 [overlay.replace_text."csrc/moe/grouped_topk_kernels.cu"]
 "return hggc::std::isfinite(val);" = "return isfinite(cuda_cast<float, T>(val));"
+
+# HGGC 的兼容 SM80/89 标识不能选择 NVIDIA 的 redux 指令。
+# 保留同一 32-lane 归约，使用 upstream 现有 shuffle fallback。
+[overlay.replace_text."csrc/topk_histogram_4096.cuh"]
+"warp_reduce_sum_full(uint32_t v) {\n#if defined(COMPATIBLE_ARCH) && (COMPATIBLE_ARCH >= 800)" = "warp_reduce_sum_full(uint32_t v) {\n#if !defined(__HGGCCC__) && defined(COMPATIBLE_ARCH) && (COMPATIBLE_ARCH >= 800)"
+"warp_reduce_or_full(uint32_t v) {\n#if defined(COMPATIBLE_ARCH) && (COMPATIBLE_ARCH >= 800)" = "warp_reduce_or_full(uint32_t v) {\n#if !defined(__HGGCCC__) && defined(COMPATIBLE_ARCH) && (COMPATIBLE_ARCH >= 800)"
 
 # PPU 1.0/1.5 do not use programmatic dependent launch. Reuse upstream's
 # ordinary launch branch while retaining the same kernel and arguments.

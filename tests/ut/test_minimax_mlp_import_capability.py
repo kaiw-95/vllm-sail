@@ -401,6 +401,160 @@ def test_non_ppu_norm_retains_real_quantized_provider(
 
 
 @pytest.mark.upstream_source
+@pytest.mark.parametrize("sequence_parallel", [False, True])
+@pytest.mark.parametrize("residual_present", [False, True])
+def test_real_decoder_input_norm_checks_live_consumer_but_not_under_sp(
+    modules, monkeypatch, upstream_source_root, sequence_parallel, residual_present
+):
+    provider = load_model(modules, monkeypatch, upstream_source_root, True)
+    load_patch("vllm_sail/patch/enhancement/models/minimax_m3.py")
+    kernel_cls = type("FlashInferCutlassMxfp8LinearKernel", (), {})
+    modules(
+        "vllm.model_executor.kernels.linear.mxfp8.flashinfer",
+        FlashInferCutlassMxfp8LinearKernel=kernel_cls,
+        FlashInferCutedslMxfp8LinearKernel=type("OtherKernel", (), {}),
+    )
+    linear = NS(quant_method=NS(kernel=kernel_cls()), key=provider.kMxfp8Dynamic)
+    probes, calls = [], []
+
+    def input_key(actual):
+        assert actual is linear
+        probes.append(actual.key)
+        return actual.key
+
+    provider.get_input_quant_key = input_key
+    hidden, residual, output, updated = object(), object(), object(), object()
+
+    def norm(value, skip=None, *, mxfp8):
+        assert value is hidden
+        calls.append((skip, mxfp8))
+        return output if skip is None else (output, updated)
+
+    layer = object.__new__(provider.MiniMaxM3DecoderLayer)
+    layer.use_sequence_parallel = sequence_parallel
+    layer.fuse_input_allreduce = False
+    layer.self_attn = NS(qkv_proj=linear)
+    layer.input_layernorm = norm
+    # 每次调用重新解析 consumer key；SP 时不得调用量化 consumer 探针。
+    for key in (provider.kMxfp8Dynamic, None):
+        linear.key = key
+        skip = residual if residual_present else None
+        result = layer.forward_input_norm(hidden, skip)
+        assert result == (output, updated if residual_present else hidden)
+        assert calls[-1] == (
+            skip,
+            not sequence_parallel and key is provider.kMxfp8Dynamic,
+        )
+    assert probes == ([] if sequence_parallel else [provider.kMxfp8Dynamic, None])
+
+
+@pytest.mark.upstream_source
+@pytest.mark.parametrize("ppu", [False, True])
+@pytest.mark.parametrize("tp_size", [1, 4])
+@pytest.mark.parametrize("replicate_index_q", [False, True])
+def test_real_indexed_qkv_constructor_retains_storage_and_initializes_load_state(
+    modules, monkeypatch, upstream_source_root, ppu, tp_size, replicate_index_q
+):
+    load_model(modules, monkeypatch, upstream_source_root, ppu)
+    path = upstream_source_root / "vllm/model_executor/layers/linear.py"
+    constructors, loads = [], []
+    param = NS(load_qkv_weight=lambda **kwargs: loads.append(kwargs))
+
+    class Column:
+        def __init__(self, **kwargs):
+            constructors.append(kwargs)
+            self.tp_size, self.tp_rank = tp_size, 0
+            self.weight = param
+
+        def named_parameters(self):
+            return iter([("weight", self.weight)])
+
+    namespace = dict(
+        ColumnParallelLinear=Column,
+        get_tensor_model_parallel_world_size=lambda: tp_size,
+        divide=lambda value, divisor: value // divisor,
+        BlockQuantScaleParameter=type("BlockQuantScaleParameter", (), {}),
+    )
+    tree = ast.Module(
+        body=[
+            ast.ImportFrom(
+                module="__future__",
+                names=[ast.alias(name="annotations")],
+                level=0,
+            ),
+            *[
+                definition(path, name)
+                for name in (
+                    "StackedColumnParallelLinear",
+                    "QKVParallelLinear",
+                    "MinimaxM3QKVParallelLinearWithIndexer",
+                )
+            ],
+        ],
+        type_ignores=[],
+    )
+    exec(compile(ast.fix_missing_locations(tree), str(path), "exec"), namespace)
+    modules("vllm.model_executor.layers.linear", **namespace)
+    cls = namespace["MinimaxM3QKVParallelLinearWithIndexer"]
+    quant = object()
+    kwargs = dict(
+        hidden_size=16,
+        head_size=4,
+        total_num_heads=8,
+        total_num_kv_heads=2,
+        total_num_index_heads=2,
+        index_head_size=4,
+        bias=False,
+        quant_config=quant,
+        prefix="layers.0.qkv",
+        replicate_index_q=replicate_index_q,
+    )
+    before = cls(**kwargs)
+    assert "loaded_shard_ids" not in before.__dict__
+    incoming = object()
+    with pytest.raises(AttributeError, match="loaded_shard_ids"):
+        before.weight_loader_v2(param, incoming, "index_k")
+    load_patch("vllm_sail/patch/enhancement/models/minimax_m3.py")
+    after = cls(**kwargs)
+    assert constructors[0] == constructors[1]
+    assert constructors[1]["quant_config"] is quant
+    assert after.weight is param
+    assert {
+        k: v for k, v in after.__dict__.items() if k != "loaded_shard_ids"
+    } == before.__dict__
+    if not ppu:
+        assert "loaded_shard_ids" not in after.__dict__
+        return
+    assert after.loaded_shard_ids == {}
+    for shard in cls.shard_ids:
+        after.weight_loader_v2(param, incoming, shard)
+    assert after.loaded_shard_ids == {"weight": set(cls.shard_ids)}
+    assert after.pop_missing_shards() == [] and after.loaded_shard_ids == {}
+    assert len(loads) == len(cls.shard_ids)
+    for shard, load in zip(cls.shard_ids, loads, strict=False):
+        replicated = shard == "index_k" or (shard == "index_q" and replicate_index_q)
+        assert load == dict(
+            loaded_weight=incoming,
+            num_heads=tp_size if replicated else after.num_kv_head_replicas,
+            shard_id=shard,
+            shard_offset=after._get_shard_offset_mapping(shard),
+            shard_size=after._get_shard_size_mapping(shard),
+        )
+    after.weight_loader_v2(param, incoming, "q")
+    assert after.pop_missing_shards() == [
+        "weight." + shard for shard in cls.shard_ids[1:]
+    ]
+    assert after.loaded_shard_ids == {}
+    # constructor 委托不得覆盖 provider 已有的 shard 状态。
+    after.validate_shard_id("index_q", param)
+    existing = after.loaded_shard_ids
+    cls.__init__(after, **kwargs)
+    assert after.loaded_shard_ids is existing
+    assert existing == {"weight": {"index_q"}}
+    assert constructors[2] == constructors[0]
+
+
+@pytest.mark.upstream_source
 def test_ppu_mxfp8_emulation_does_not_request_swizzled_norm(
     modules, monkeypatch, upstream_source_root
 ):
