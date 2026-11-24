@@ -309,10 +309,7 @@ ENVIRONMENT_SPECS: tuple[EnvSpec, ...] = (
         "PPU_SDK",
         section="Runtime environment",
         default="/usr/local/PPU_SDK",
-        description=(
-            "SAIL SDK root used at runtime (for example, preloading "
-            "`CUDA_SDK/lib64/libcublas.so` when importing `acext`)."
-        ),
+        description="SAIL SDK root used at runtime.",
     ),
     # -- Backend selection -------------------------------------------------
     # PPU MoE group-GEMM backend. Unset means "pick the best available",
@@ -336,7 +333,7 @@ ENVIRONMENT_SPECS: tuple[EnvSpec, ...] = (
         "VLLM_SAIL_DENSE_BF16_DEEPGEMM",
         section="Backend selection",
         default=False,
-        description="Opt into the PPU 1.5 (Zhenwu M890) BF16 dense DeepGEMM path.",
+        description="Opt into the Zhenwu M890 BF16 dense DeepGEMM path.",
     ),
     _bool_spec(
         "VLLM_SAIL_DEEPGEMM_MOE_TP_FUSED",

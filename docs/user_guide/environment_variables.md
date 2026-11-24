@@ -27,7 +27,7 @@ python tools/render_env_docs.py --check
 
 | Variable | Default | Values | Aliases | Description |
 | --- | --- | --- | --- | --- |
-| `PPU_SDK` | `/usr/local/PPU_SDK` | path | — | SAIL SDK root used at runtime (for example, preloading `CUDA_SDK/lib64/libcublas.so` when importing `acext`). |
+| `PPU_SDK` | `/usr/local/PPU_SDK` | path | — | SAIL SDK root used at runtime. |
 
 ## Backend selection
 
@@ -35,7 +35,7 @@ python tools/render_env_docs.py --check
 | --- | --- | --- | --- | --- |
 | `VLLM_SAIL_MOE_BACKEND` | Unset (automatic) | `deepgemm`, `acext`, `triton` | `VLLM_PPU_MOE_BACKEND` | Select the PPU MoE group-GEMM backend instead of automatic selection. |
 | `VLLM_SAIL_DENSE_BACKEND` | Unset (automatic) | `deepgemm`, `acext`, `triton` | `VLLM_PPU_DENSE_BACKEND` | Select the PPU dense-GEMM backend for quantized linear layers. |
-| `VLLM_SAIL_DENSE_BF16_DEEPGEMM` | `0` | `0`, `1` | `VLLM_PPU_DENSE_BF16_DEEPGEMM` | Opt into the PPU 1.5 (Zhenwu M890) BF16 dense DeepGEMM path. |
+| `VLLM_SAIL_DENSE_BF16_DEEPGEMM` | `0` | `0`, `1` | `VLLM_PPU_DENSE_BF16_DEEPGEMM` | Opt into the Zhenwu M890 BF16 dense DeepGEMM path. |
 | `VLLM_SAIL_DEEPGEMM_MOE_TP_FUSED` | `0` | `0`, `1` | `VLLM_PPU_DEEPGEMM_MOE_TP_FUSED` | Enable the supported fused tensor-parallel DeepGEMM MoE path. |
 | `VLLM_SAIL_DEEPGEMM_MOE_FUSED_ACT_QUANT` | `0` | `0`, `1` | `VLLM_PPU_DEEPGEMM_MOE_FUSED_ACT_QUANT` | Fuse activation and the second MoE GEMM's input quantization into DeepGEMM's SiLU/SiTU kernel for FP8 and MXFP4 experts; BF16 experts, unquantized dense MLPs and shared experts use its values-only epilogue. |
 | `VLLM_SAIL_USE_PLA` | `1` | `0`, `1` | `VLLM_PPU_USE_PLA` | Allow PLA linear-attention paths where available. |
