@@ -38,7 +38,7 @@ from vllm_sail.patch.utils import patch
     "vllm.some_module",
     "target_function",
     reason="PPU's foo kernel needs bar; upstream hardcodes baz.",
-    affected_versions=">=0.31.0,<0.32.0",
+    affected_versions=">=0.32.0,<0.33.0",
     remove_when="upstream PR #12345 lands, which makes baz configurable.",
 )
 def target_function(arg: int) -> int:

@@ -17,6 +17,9 @@ User-facing overview: [README.md](README.md). Contribution workflow:
   corresponding `VLLM_PPU_*` aliases, with SAIL taking precedence. Build variables
   accept only the `VLLM_SAIL_*` names.
 - Declare runtime variables in `vllm_sail/envs.py` and keep their access lazy.
+  Regenerate `docs/user_guide/environment_variables.md` with
+  `python tools/render_env_docs.py` (and verify with `--check`) when changing
+  runtime variables.
 
 ## Verification
 

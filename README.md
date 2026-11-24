@@ -32,15 +32,20 @@ general plugin entry points.
 ## Features
 
 - **Native PPU kernels:** activation, normalization, quantization, cache
-  operations, sampling and MoE routing compiled with HGGC.
-- **Attention:** PPU FlashAttention integration, MLA and sparse attention,
-  plus GDN and KDA linear attention paths.
-- **Dense and MoE compute:** DeepGEMM, ACEXT and Triton backends, with BF16/FP16
-  and selected INT8, FP8, MXFP4 and INT4 quantization paths.
+  operations, sampling, MoE routing and model-specific operators compiled with HGGC.
+- **Attention:** PPU FlashAttention 2/3 (including Qwen4Exp QSA), dense and
+  sparse FlashMLA (including FP8 dense decode and opt-in fused norm-rope
+  sparse attention), MiniMax M3 SAIL MSA, Step-5 DSA, plus GDN and KDA linear
+  attention paths.
+- **Dense and MoE compute:** DeepGEMM (including MegaMoE), ACEXT and Triton
+  backends, with BF16/FP16, INT8, FP8, MXFP8 emulation, MXFP4 and selected INT4
+  quantization paths, plus loading-time online quantization (`fp8-to-int8`,
+  `bf16-to-int8`, `fp8-to-bf16`).
 - **Model integration:** PPU model registrations and adaptations for dense,
   mixture-of-experts and hybrid architectures.
 - **Developer tooling:** tests that run without a PPU, reproducible kernel
-  generation for upstream sources, patch checks and device correctness tests.
+  generation for upstream sources, patch checks, recipe-driven CI and device
+  correctness tests.
 
 Availability depends on the device, SDK, backend and checkpoint format. See the
 [feature matrix](docs/user_guide/supported_features.md) for implementation scope
@@ -98,11 +103,14 @@ offline inference and model configuration.
 | [Installation](docs/getting_started/installation.md) | SDK prerequisites, source installation and troubleshooting |
 | [Quickstart](docs/getting_started/quickstart.md) | Online serving and offline inference |
 | [Supported features](docs/user_guide/supported_features.md) | Backends, quantization, model integration and limitations |
-| [Configuration](docs/user_guide/configuration.md) | Backend selection and PPU environment variables |
+| [Configuration](docs/user_guide/configuration.md) | Backend selection, model-specific controls and profiling |
+| [Environment variables](docs/user_guide/environment_variables.md) | Generated reference of all runtime variables, defaults and aliases |
+| [Online quantization](docs/user_guide/online_quantization.md) | Loading-time `fp8-to-int8`, `bf16-to-int8` and `fp8-to-bf16` conversion |
 | [Verification](docs/user_guide/verification_guide.md) | Environment, kernel and model validation |
+| [PPU Recipe CI Matrix](tests/ppu/README.md) | Active PR `fast_sanity` and Nightly accuracy matrix |
 | [Architecture](docs/developer_guide/architecture.md) | Plugin lifecycle and source layout |
 | [HGGC kernels](docs/developer_guide/kernels.md) | Native builds, source ownership and regeneration |
-| [Kernel benchmarks](benchmarks/README.md) | Device benchmarks and MoE tuning tools |
+| [Kernel benchmarks](benchmarks/README.md) | Device benchmarks, MoE tuning tools and profiling-aware serve benchmark |
 
 ## Contributing
 

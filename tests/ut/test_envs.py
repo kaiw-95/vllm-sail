@@ -446,3 +446,33 @@ def test_qsa_kernel_sail_name_wins_over_ppu_alias(monkeypatch):
     monkeypatch.setenv("VLLM_PPU_QSA_KERNEL", "triton")
     assert envs.VLLM_SAIL_QSA_KERNEL == "cuda"
     assert envs.VLLM_PPU_QSA_KERNEL == "cuda"
+
+
+def test_env_specs_cover_all_variables_and_match_defaults() -> None:
+    names = [spec.name for spec in envs.ENVIRONMENT_SPECS]
+    assert len(names) == len(set(names))
+    assert set(names) == set(envs.environment_variables)
+    assert set(names) == set(envs.environment_specs)
+    for spec in envs.ENVIRONMENT_SPECS:
+        assert spec.section.strip(), f"{spec.name} is missing a doc section"
+        assert spec.description.strip(), f"{spec.name} is missing a doc description"
+        assert envs.aliases_of(spec.name) == spec.aliases
+        for alias in spec.aliases:
+            assert envs.aliases_of(alias) == spec.aliases
+        assert spec.getter() == spec.default
+
+
+def test_environment_variables_doc_is_up_to_date() -> None:
+    from tools import render_env_docs
+
+    doc_path = (
+        Path(__file__).parents[2] / "docs" / "user_guide" / "environment_variables.md"
+    )
+    assert doc_path.is_file(), (
+        "docs/user_guide/environment_variables.md is missing; regenerate with: "
+        f"{render_env_docs.REGENERATE_COMMAND}"
+    )
+    assert doc_path.read_text(encoding="utf-8") == render_env_docs.render(), (
+        "docs/user_guide/environment_variables.md is out of date; regenerate with: "
+        f"{render_env_docs.REGENERATE_COMMAND}"
+    )

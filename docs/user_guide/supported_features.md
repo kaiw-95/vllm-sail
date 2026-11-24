@@ -24,12 +24,13 @@ need workload-specific tuning.
 | Area | Implementation | Requirements and limits |
 | --- | --- | --- |
 | Dense linear layers | PPU DeepGEMM, ACEXT and Triton paths | Selection depends on precision, tensor layout, device and installed libraries |
-| Mixture of experts | PPU backends for unquantized and selected quantized experts | Backend support varies with expert shape and quantization format |
-| FlashAttention | PPU FlashAttention 2 and 3 integration | Matching SDK libraries; version selection follows availability and model constraints |
-| MLA and sparse attention | PPU FlashMLA integration and sparse indexer | Matching PPU libraries; FP8 dense FlashMLA decode is unavailable |
-| Gated delta networks | PLA and Triton paths for GDN | PLA availability and supported shapes determine dispatch |
+| Mixture of experts | PPU DeepGEMM (including MegaMoE), ACEXT and Triton backends for unquantized and selected quantized experts | Backend support varies with expert shape and quantization format; MegaMoE (`--moe-backend deep_gemm_mega_moe`) targets MXFP4 experts on Zhenwu M890 |
+| FlashAttention | PPU FlashAttention 2 and 3 integration (including FA3 QSA for Qwen4Exp) | Matching SDK libraries; version selection follows availability and model constraints |
+| MLA and sparse attention | PPU FlashMLA integration (dense, FP8 dense decode, sparse, and opt-in DeepSeek V4.1 fused norm-rope sparse attention) and sparse indexers | Matching PPU libraries (`flash_mla`, `deep_gemm`, `deep_select`); opt-in fused V4.1 path requires a compatible `flash_mla` wheel and `VLLM_SAIL_PPU_KV_MXFP8=1` |
+| Model-specific sparse attention | MiniMax M3 / M3.1 SAIL MSA (`msa_for_sail`), Step-5 DSA, GLM-5-Next kpool, and Qwen4Exp QSA | Library, chip-capability and shape gates apply; see [Configuration](configuration.md) |
+| Gated delta networks | PLA, native HGGC fused MTP decode and Triton paths for GDN | `VLLM_GDN_DECODE_KERNEL`, PLA availability and supported shapes determine dispatch |
 | Kimi delta attention | PLA and Triton paths for KDA | PLA prefill retains final recurrent state; intermediate prefill checkpoints are disabled. Backend and sequence-shape constraints apply |
-| Native operations | HGGC activation, normalization, quantization, routing, cache, sampling and model-specific kernels | Only the selected source corpus is compiled; each changed kernel needs device correctness tests |
+| Native operations | HGGC activation, normalization, quantization, routing, cache, sampling and model-specific kernels, plus Triton-backed registrations (such as `merge_attn_states`) | Only the selected source corpus is compiled; each changed kernel needs device correctness tests |
 | Distributed MoE | DeepEP integration, including low-latency receive handling | Compatible PPU communication libraries and a validated multi-device setup |
 
 ## Precision and quantization
@@ -85,10 +86,12 @@ the bundled default recipe for BF16. Device and model qualification is required.
 | --- | --- |
 | Dense and MoE models | Upstream vLLM architectures using the applicable PPU operators and backends |
 | DeepSeek V4 | Model, MTP and DSpark registrations, with PPU attention, routing and cache paths |
-| DeepSeek V4.1 | Target and DSpark adaptation with PPU FlashMLA, delayed mHC and mixed-precision quantization; device verification pending |
-| MiniMax M3 | Optional model registrations, quantization mapping and native attention-related operations |
-| Qwen hybrid models | GDN attention and selected quantization and speculative-decoding adaptations |
-| Kimi K3 | KDA attention and native MLA/cache operations |
+| DeepSeek V4.1 | Target and DSpark adaptation with PPU FlashMLA, delayed mHC and Zhenwu M890 Mega mHC, MegaMoE, candidate-only `SparseMQAIndexer`, opt-in fused norm-rope sparse attention, and mixed-precision quantization |
+| GLM-5 / GLM-5-Next / GLM-5.3 | `GlmMoeDsaForCausalLM` registration, FP8/INT8 indexers, and kpool sparse attention (INT8 kpool on Zhenwu 810E, FP8 on Zhenwu M890) |
+| MiniMax M3 / M3.1-Flash | Optional model registrations with `SupportsQuant`, SAIL MSA sparse attention (`msa_for_sail`), quantization/channelwise mappings, DSpark attention and native fused QK-norm/RoPE/KV-insert operations |
+| Qwen hybrid and Qwen4Exp models | GDN attention, Qwen4Exp QSA (FA3 QSA kernel and Zhenwu M890 DeepGEMM MXFP4 compressed-key scoring), PLE quantization mapping and speculative-decoding adaptations |
+| Step-5 | Step-5 DSA attention backend (native E4M3 on Zhenwu M890, software E4M3 on Zhenwu 810E, optional FP16 indexer storage) and opt-in native HGGC prefill and radix selector |
+| Kimi K3 | KDA attention, native MLA/cache operations, and dense EAGLE3/DSpark MLA drafts retargeted to native FP8 `FLASHMLA` |
 | Mamba / Jamba | HGGC selective-scan source integration |
 
 Model registration and kernel availability are separate checks. Record the exact
