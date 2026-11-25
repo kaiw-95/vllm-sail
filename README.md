@@ -103,7 +103,7 @@ offline inference and model configuration.
 | [Quickstart](docs/getting_started/quickstart.md) | Online serving and offline inference |
 | [Supported features](docs/user_guide/supported_features.md) | Backends, quantization, model integration and limitations |
 | [Configuration](docs/user_guide/configuration.md) | Backend selection, model-specific controls and profiling |
-| [Environment variables](docs/user_guide/environment_variables.md) | Generated reference of all runtime variables, defaults and aliases |
+| [Environment variables](docs/user_guide/environment_variables.md) | Generated reference for variables declared in `vllm_sail/envs.py`, including defaults and aliases |
 | [Online quantization](docs/user_guide/online_quantization.md) | Loading-time `fp8-to-int8`, `bf16-to-int8` and `fp8-to-bf16` conversion |
 | [Verification](docs/user_guide/verification_guide.md) | Environment, kernel and model validation |
 | [PPU Recipe CI Matrix](tests/ppu/README.md) | Active PR `fast_sanity` and Nightly accuracy matrix |

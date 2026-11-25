@@ -48,7 +48,7 @@ REMOVE_WHEN = (
     "ppu_* members into the MoEBackend Literal."
 )
 
-#: (target, reason, affected versions, remove_when) for every patch installed
+#: (target, reason, remove_when) for every patch installed
 #: by this module. Read by the metadata-shape unit tests.
 METADATA = ((_TARGET, REASON, REMOVE_WHEN),)
 

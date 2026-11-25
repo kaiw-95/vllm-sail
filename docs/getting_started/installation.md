@@ -72,11 +72,10 @@ Build the exact upstream commit recorded in
 [the verified pin](../../.github/vllm-main-verified.commit) and
 [kernel manifest](../../csrc/upstream/manifest.toml); both records must agree.
 
-For a commit-pinned main build, the full upstream SHA in the wheel version
-identifies the verified build; leave version overrides unset so runtime checks
-can observe it. At runtime, mismatches log a warning by default so you can test
-neighboring upstream builds with API and functional tests; set
-`VLLM_SAIL_STRICT_COMPAT=1` (as CI does) to fail closed instead.
+For a commit-pinned main build, the runtime check reads the full upstream SHA
+from the installed vLLM version. A mismatch logs a warning by default so you
+can test neighboring upstream builds with API and functional tests. Set
+`VLLM_SAIL_STRICT_COMPAT=1` to reject mismatches. CI passes `strict=True`.
 
 Use a matching wheel supplied with your PPU environment, or build that upstream
 source pin. For a source build, prepare vLLM's build and runtime dependencies

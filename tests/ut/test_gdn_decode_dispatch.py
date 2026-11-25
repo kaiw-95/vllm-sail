@@ -60,7 +60,9 @@ def gdn_provider(modules, monkeypatch, upstream_source_root):
         return value
 
     def ignored_getter():
-        pytest.fail("Upstream-ignored cache path and credential getters must not be evaluated")
+        pytest.fail(
+            "Upstream-ignored cache path and credential getters must not be evaluated"
+        )
 
     env_module = modules(
         "vllm.envs",

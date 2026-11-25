@@ -153,7 +153,9 @@ def test_fused_mqa_topk_schema_does_not_select_sm100_on_ppu(
 
     class Ops:
         def __getattr__(self, name):
-            raise AssertionError("PPU must not probe or invoke the uncompiled fused MQA op")
+            raise AssertionError(
+                "PPU must not probe or invoke the uncompiled fused MQA op"
+            )
 
     available = function(
         upstream_source_root

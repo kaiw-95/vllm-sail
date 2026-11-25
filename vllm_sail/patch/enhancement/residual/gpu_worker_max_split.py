@@ -33,7 +33,7 @@ REMOVE_WHEN = (
     "matches stock PyTorch), or upstream makes the floor platform-queryable."
 )
 
-#: (target, reason, affected versions, remove_when) for every patch installed
+#: (target, reason, remove_when) for every patch installed
 #: by this module. Read by the metadata-shape unit tests.
 METADATA = ((f"{_MODULE}.{_TARGET}", REASON, REMOVE_WHEN),)
 

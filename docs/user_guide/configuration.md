@@ -263,8 +263,8 @@ graph replay bypassing module hooks.
 against the `upstream_ref` recorded in the packaged kernel manifest
 (`csrc/upstream/manifest.toml`). By default, a mismatch logs a warning and
 continues so developers can validate neighboring upstream commits via API and
-functional tests; set `VLLM_SAIL_STRICT_COMPAT=1` (used in CI) to fail closed
-with a `RuntimeError`.
+functional tests. Set `VLLM_SAIL_STRICT_COMPAT=1` to reject a mismatch with a
+`RuntimeError`. CI passes `strict=True`.
 
 Commit-pinned installations match the full 40-character source SHA reported by
 the installed vLLM package. Release-tag manifests match the major and minor

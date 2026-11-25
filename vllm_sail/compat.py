@@ -50,23 +50,13 @@ def installed_vllm_version() -> str:
         return "unknown"
 
 
-def _version_key(version: str) -> tuple[int, ...] | None:
-    """Parse the leading ``X.Y[.Z]`` of a version into a comparable tuple.
-
-    Returns ``None`` when no ``X.Y`` prefix can be read.
-    """
-    head = version.strip().lstrip("v").split("+", 1)[0]
-    parts: list[int] = []
-    for chunk in head.split("."):
-        digits = ""
-        for char in chunk:
-            if not char.isdigit():
-                break
-            digits += char
-        if not digits:
-            break
-        parts.append(int(digits))
-    return tuple(parts) if len(parts) >= 2 else None
+def _release_line(version: str) -> str | None:
+    """Read the major and minor components from a release or SCM version."""
+    match = re.match(r"v?([0-9]+)\.([0-9]+)", version.strip())
+    if match is None:
+        return None
+    major, minor = match.groups()
+    return f"{major.lstrip('0') or '0'}.{minor.lstrip('0') or '0'}"
 
 
 def _mismatch_reason(version: str, ref: str) -> str | None:
@@ -84,15 +74,13 @@ def _mismatch_reason(version: str, ref: str) -> str | None:
             "exact source with the full SCM commit hash."
         )
 
-    ref_key = _version_key(ref)
-    if ref_key is not None:
-        ver_key = _version_key(version)
-        if ver_key is not None and ver_key[:2] == ref_key[:2]:
+    release_line = _release_line(ref)
+    if release_line is not None:
+        if _release_line(version) == release_line:
             return None
-        expected_line = f"{ref_key[0]}.{ref_key[1]}.x"
         return (
             f"vllm-sail {_plugin_version()} was built against vLLM {ref} "
-            f"(expected {expected_line}), but the installed vLLM version is "
+            f"(expected {release_line}.x), but the installed vLLM version is "
             f"{version!r}. Install a matching vLLM build or set VLLM_VERSION if "
             "running from a source checkout."
         )
@@ -131,7 +119,7 @@ def check_vllm_compatibility(
     ref = _upstream_ref()
     # Only release-line checks accept a developer-supplied version. Commit
     # checks must read the identity recorded in the installed build.
-    override = None if _is_commit_sha(ref) else os.getenv("VLLM_VERSION")
+    override = os.getenv("VLLM_VERSION") if _release_line(ref) is not None else None
     version = override.strip() if override else installed_vllm_version()
     mismatch = _mismatch_reason(version, ref)
     if mismatch is None:

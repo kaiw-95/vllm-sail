@@ -56,21 +56,21 @@ def compat(monkeypatch: pytest.MonkeyPatch) -> Iterator[types.ModuleType]:
 @pytest.mark.parametrize(
     ("version", "expected"),
     [
-        ("0.31.0", (0, 31, 0)),
-        ("v0.31.0", (0, 31, 0)),
-        ("0.31", (0, 31)),
-        ("0.31.1+cu128", (0, 31, 1)),
-        ("0.31.0rc1", (0, 31, 0)),
-        ("0.1.dev1+g4bdc8a788", (0, 1)),
+        ("0.31.0", "0.31"),
+        ("v0.31.0", "0.31"),
+        ("0.31", "0.31"),
+        ("0.31.1+cu128", "0.31"),
+        ("0.31.0rc1", "0.31"),
+        ("0.1.dev1+g4bdc8a788", "0.1"),
     ],
 )
-def test_version_key_parses(compat, version: str, expected: tuple[int, ...]) -> None:
-    assert compat._version_key(version) == expected
+def test_release_line_parses(compat, version: str, expected: str) -> None:
+    assert compat._release_line(version) == expected
 
 
-@pytest.mark.parametrize("version", ["unknown", "", "0", "dev", "abc"])
-def test_version_key_unparseable(compat, version: str) -> None:
-    assert compat._version_key(version) is None
+@pytest.mark.parametrize("version", ["unknown", "", "0", "dev", "abc", "0.²"])
+def test_release_line_unparseable(compat, version: str) -> None:
+    assert compat._release_line(version) is None
 
 
 def test_release_tag_uses_version_env_override(
@@ -81,6 +81,14 @@ def test_release_tag_uses_version_env_override(
     monkeypatch.setenv("VLLM_VERSION", " 0.33.0 ")
     compat.check_vllm_compatibility(strict=True)
     assert compat._last_matched
+
+
+def test_named_ref_ignores_version_env_override(compat, monkeypatch) -> None:
+    monkeypatch.setattr(compat, "_upstream_ref", lambda: "main")
+    monkeypatch.setattr(compat, "installed_vllm_version", lambda: "0.33.0")
+    monkeypatch.setenv("VLLM_VERSION", "main")
+    with pytest.raises(RuntimeError, match="vLLM ref 'main'"):
+        compat.check_vllm_compatibility(strict=True)
 
 
 def test_no_hardcoded_version_range_constants(compat) -> None:

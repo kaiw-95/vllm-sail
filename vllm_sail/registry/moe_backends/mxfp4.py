@@ -6,8 +6,8 @@ from __future__ import annotations
 import vllm.model_executor.layers.fused_moe.modular_kernel as mk
 from vllm.config.kernel import MoEBackend
 from vllm.model_executor.layers.fused_moe.oracle import mxfp4 as oracle
-from vllm.model_executor.layers.quantization.utils.quant_utils import QuantKey
 from vllm.model_executor.layers.quantization.utils.quant_utils import (
+    QuantKey,
     kFp8DynamicTokenSym,
 )
 
