@@ -106,8 +106,8 @@ def fwht128_quant_fp8(q: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
 
 
 def init_mega_moe_experts(self, vllm_config, config, quant_config, prefix):
-    # PPU MODIFICATION: begin — GLM 的新 block-FP8 adapter 需要 MXFP8，
-    # SAIL MegaMoE 当前仅消费 MXFP4；在冷加载和预加载进程中一致拒绝。
+    # PPU MODIFICATION: begin — GLM's new block-FP8 adapter requires MXFP8,
+    # whereas SAIL MegaMoE only consumes MXFP4; reject consistently in cold and preloaded processes.
     if current_platform.is_ppu():
         raise NotImplementedError(
             "GLM-5.3 block-FP8 MegaMoE requires MXFP8 expert weights; "

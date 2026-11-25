@@ -190,7 +190,7 @@ def test_all_sampler_kernel_calls_bind_the_upstream_draft_shard_contract(
 
 @pytest.mark.upstream_source
 def test_complete_sampler_body_keeps_only_ppu_insert_launch(upstream_source_root):
-    """完整签名、默认值和函数体对齐；不将每日 diff 当作完整漂移检查。"""
+    """Full signature, defaults, and body alignment; do not treat daily diffs as complete drift checks."""
     import ast
 
     copied = definition(

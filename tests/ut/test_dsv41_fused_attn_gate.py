@@ -323,7 +323,7 @@ def test_lora_closes_fused_gate_before_the_wheel_probe(gate, monkeypatch) -> Non
     config.lora_config = object()
 
     def forbidden(*args, **kwargs):
-        raise AssertionError("LoRA 配置不应探测 fused wheel")
+        raise AssertionError("LoRA config must not probe the fused wheel")
 
     monkeypatch.setattr(importlib.util, "find_spec", forbidden)
     ok, report = gate.module.fused_gate(config)

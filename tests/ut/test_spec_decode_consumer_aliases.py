@@ -281,7 +281,7 @@ def test_real_verify_selects_batch_mask_flag_through_bound_consumer(
     mask_case,
     with_trace,
 ):
-    """真实 _verify 和 PPU 副本；模块导入、采样参数处理和数值 kernel 是边界。"""
+    """Real _verify and PPU copy; module imports, sampling param handling, and numerical kernels are boundaries."""
     import inspect
 
     from tests.support.spec_decode import Kernel, Tensor
@@ -303,7 +303,7 @@ def test_real_verify_selects_batch_mask_flag_through_bound_consumer(
     def resample(*args, **kwargs):
         resample_calls.append(kernel_signature.bind(*args, **kwargs).arguments)
 
-    # bind_body 使用真实 provider 的活跃字典；该字典仍是 fixture module，非安装证据。
+    # bind_body uses the real provider's live globals dict; it is still a fixture module, not install evidence.
     provider_globals = dict(
         torch=SimpleNamespace(
             **{
@@ -332,7 +332,7 @@ def test_real_verify_selects_batch_mask_flag_through_bound_consumer(
     installer.platform.ppu = is_ppu
     installer.install()
     if not preloaded:
-        # 模拟 cold 安装之后的真实 by-value import，不加载整个消费者模块。
+        # Simulate real by-value import after cold install without loading the whole consumer module.
         exec(f"from {PROVIDER} import rejection_sample", consumer.__dict__)
     assert consumer.rejection_sample is installer.provider.rejection_sample
 

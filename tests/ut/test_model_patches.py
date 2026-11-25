@@ -1021,7 +1021,7 @@ def test_replacements_accept_upstream_keywords(
 
 
 def _marlin_boundary(modules, root, preloaded):
-    """加载真实准入函数及 authored patch；不是完整 upstream 导入或设备证据。"""
+    """Load real gating functions and authored patches; not full upstream import or device evidence."""
     platform = NS(
         ppu=True,
         capability=80,
@@ -1214,7 +1214,7 @@ def test_real_marlin_compute_admission_rejects_ppu_but_preserves_layout(
         state.patch._NO_PPU_MARLIN,
     )
     quant_type = state.scalar_types.uint4b8
-    # 公共量化配置校验不能阻断之后的 Triton/Humming 等 MP 内核选择。
+    # Shared quant config validation must not block later MP kernel selection such as Triton/Humming.
     assert state.utils._check_marlin_supported is state.dense_config_check
     assert state.utils.check_marlin_supported(quant_type, 32) is True
     assert state.utils.verify_marlin_supported(quant_type, 32) is None
@@ -1388,7 +1388,7 @@ def test_real_mxfp4_oracle_rejects_marlin_compute_and_keeps_auto_fallback(
 
 
 def _linear_selection_boundary(state, root, backend):
-    """真实筛选 helpers；候选列表和可选 Humming 优先级是本测试的外部边界。"""
+    """Real selection helpers; candidate list and optional Humming priority are external boundaries here."""
     linear = state.linear
     linear.envs = NS(VLLM_DISABLED_KERNELS=[], VLLM_BATCH_INVARIANT=False)
     linear.logger = NS(
@@ -1421,7 +1421,7 @@ def test_real_mp_constructor_and_weight_creation_preserve_non_marlin_selection(
     method_name,
     backend,
 ):
-    """真实 constructor/create_weights/selector/Triton 准入；不执行分配或 GEMM。"""
+    """Real constructor/create_weights/selector/Triton gating; does not run allocation or GEMM."""
     state = _marlin_boundary(modules, upstream_source_root, preloaded)
     linear = _linear_selection_boundary(state, upstream_source_root, backend)
     dtype = state.config.act_type
@@ -1521,7 +1521,7 @@ def test_real_mp_constructor_and_weight_creation_preserve_non_marlin_selection(
         register_parameter=lambda name, value: parameters.__setitem__(name, value)
     )
     if backend == "marlin":
-        with pytest.raises(ValueError, match="PPU 没有 Marlin"):
+        with pytest.raises(ValueError, match="PPU does not ship Marlin"):
             method.create_weights(layer, 128, [128], 128, 128, dtype)
         assert parameters == {}
     else:
@@ -1575,7 +1575,7 @@ def test_marlin_gate_static_inventory_resolves_all_compute_and_consumer_targets(
 
 
 def _nvfp4_selection_boundary(state, modules, root, backend, has_humming):
-    """真实 Marlin/Humming 准入，第三方可用性和实例构造是外部边界。"""
+    """Real Marlin/Humming gating; third-party availability and instance construction are external boundaries."""
     linear = _linear_selection_boundary(state, root, backend)
 
     def initialize(self, config):
@@ -1627,7 +1627,7 @@ def _nvfp4_selection_boundary(state, modules, root, backend, has_humming):
                 {
                     "__init__": initialize,
                     "is_supported": classmethod(
-                        lambda cls, *a: (False, "测试边界：该后端不可用")
+                        lambda cls, *a: (False, "test boundary: backend unavailable")
                     ),
                 },
             ),
@@ -1684,7 +1684,7 @@ def test_real_nvfp4_auto_fallback_and_explicit_marlin_rejection(
     else:
         result = linear.init_nvfp4_linear_kernel(use_a16=True)
         assert isinstance(result, linear.HummingNvFp4LinearKernel)
-        # 模拟预加载和后加载的消费者别名使用同一 selector 和活跃 registry。
+        # Simulate preloaded and late-loaded consumer aliases sharing the same selector and live registry.
         for consumer in state.nvfp4_consumers:
             result = sys.modules[consumer].init_nvfp4_linear_kernel(use_a16=True)
             assert isinstance(result, linear.HummingNvFp4LinearKernel)
@@ -1714,7 +1714,7 @@ def test_nvfp4_non_ppu_selector_delegates_and_preserves_exception_identity(
 
 
 def _nvfp4_cutlass_bias_boundary(root, capability, padded_rows, padded_k, fail_at=None):
-    """真实 class、padding/slice helpers；tensor、native 量化/GEMM 与支持查询是替身。"""
+    """Real class and padding/slice helpers; tensors, native quant/GEMM, and support probes are doubles."""
     events = []
     error = RuntimeError("NVFP4 native boundary failed")
     dtype = object()
@@ -1806,7 +1806,7 @@ def _nvfp4_cutlass_bias_boundary(root, capability, padded_rows, padded_k, fail_a
 def test_nvfp4_cutlass_bias_applies_once_after_padding_or_in_epilogue(
     upstream_source_root, capability, padded_rows, padded_k, with_bias
 ):
-    """仅验证真实 provider 的调用契约；模拟支持查询不代表该设备支持 CUTLASS FP4。"""
+    """Verifies only the real provider's call contract; mocked support probes do not imply CUTLASS FP4 device support."""
     f = _nvfp4_cutlass_bias_boundary(
         upstream_source_root, capability, padded_rows, padded_k
     )
@@ -1881,7 +1881,7 @@ def test_real_nvfp4_selector_observes_optional_provider_gate_before_compute(
     backend,
     batch_invariant,
 ):
-    """真实 selector、准入与安装重绑；包探测是边界，不提供第三方或设备运行证据。"""
+    """Real selector, gating, and install rebinding; package probing is a boundary and gives no third-party or device evidence."""
     state = _marlin_boundary(modules, upstream_source_root, preloaded)
     state.platform.capability = capability
     package_reads = []
@@ -1904,7 +1904,7 @@ def test_real_nvfp4_selector_observes_optional_provider_gate_before_compute(
         state, modules, upstream_source_root, backend, installed
     )
     humming = sys.modules["vllm.model_executor.kernels.linear.nvfp4.humming"]
-    # 模拟真实模块级 from-import；旧测试中的假定可用 provider 边界保持不变。
+    # Simulate real module-level from-import while preserving the existing available-provider boundary.
     humming.has_humming = import_utils.has_humming
     if preloaded:
         load_patch("vllm_sail/patch/enhancement/import_gates.py")
@@ -1914,7 +1914,7 @@ def test_real_nvfp4_selector_observes_optional_provider_gate_before_compute(
     assert package_reads == ["humming"]
 
     def forbidden_provider():
-        pytest.fail("80/89 的准入必须在查询 FlashInfer provider 前拒绝")
+        pytest.fail("80/89 gating must reject before probing the FlashInfer provider")
 
     flashinfer_path = (
         upstream_source_root / "vllm/model_executor/kernels/linear/nvfp4/flashinfer.py"
@@ -1937,7 +1937,7 @@ def test_real_nvfp4_selector_observes_optional_provider_gate_before_compute(
         )
     linear._POSSIBLE_NVFP4_KERNELS[state.platform._enum].insert(0, cute)
     linear.envs.VLLM_BATCH_INVARIANT = batch_invariant
-    # 无可用 W4A16 时应给出诊断，不能进入被排除的 Marlin/Humming 计算路径。
+    # Report a diagnostic when no W4A16 backend is available without entering excluded Marlin/Humming compute paths.
     for select in (
         linear.init_nvfp4_linear_kernel,
         *(sys.modules[name].init_nvfp4_linear_kernel for name in state.nvfp4_consumers),
@@ -1956,7 +1956,7 @@ def test_real_nvfp4_selector_observes_optional_provider_gate_before_compute(
 
 
 def _real_nvfp4_consumer_call(state, root, consumer, use_a16):
-    """真实入口 body；模块、基类、分配、量化和 kernel post-load 是测试边界。"""
+    """Real entrypoint body; modules, base classes, allocations, quantization, and kernel post-load are test boundaries."""
     linear = state.linear
     selected, processed, exposed = [], [], []
     for kernel_cls in (linear.HummingNvFp4LinearKernel, linear.MarlinNvFp4LinearKernel):
@@ -1968,7 +1968,7 @@ def _real_nvfp4_consumer_call(state, root, consumer, use_a16):
         selected.append((args, kwargs))
         return linear.init_nvfp4_linear_kernel(*args, **kwargs)
 
-    # 复用 fixture 中的消费者 module 与活跃 globals；不是 installed module 导入证据。
+    # Reuse the fixture's consumer module and live globals; not installed-module import evidence.
     provider = sys.modules[consumer]
     assert provider.init_nvfp4_linear_kernel is linear.init_nvfp4_linear_kernel
     provider.init_nvfp4_linear_kernel = select
@@ -2020,7 +2020,7 @@ def _real_nvfp4_consumer_call(state, root, consumer, use_a16):
         elif consumer.endswith("quark_nvfp4"):
             path = base / "quark/schemes/quark_nvfp4.py"
             class_name = "QuarkNVFP4"
-            # 保留真实 class 编译产生的 __class__ closure，使零参数 super 正常工作。
+            # Preserve the real class's __class__ closure so zero-arg super() works normally.
             provider.QuarkScheme = type(
                 "QuarkScheme", (), {"__init__": lambda self, *args: None}
             )
@@ -2143,7 +2143,7 @@ def test_real_nvfp4_w4a4_preserves_emulation_fallback_but_never_uses_it_for_a16(
 
 
 def _glm_mtp_quant_boundary(modules, patch_utils_module, root, torch):
-    """真实 MTP/MRO/mapper 源码；模块导入、配置构造和预测器分配是边界。"""
+    """Real MTP/MRO/mapper source; module imports, config construction, and predictor allocation are boundaries."""
     from dataclasses import dataclass, field, replace
     from typing import Protocol
 
@@ -2260,7 +2260,7 @@ def test_glm_mtp_real_mro_applies_rename_only_mapping_before_predictor(
     preloaded,
     prefix,
 ):
-    """真实 Torch Module、Protocol 和 __new__；不是完整模型导入或权重数值证据。"""
+    """Real Torch Module, Protocol, and __new__; not full model import or numerical weight evidence."""
     from types import MappingProxyType
 
     torch = pytest.importorskip("torch")
@@ -2284,7 +2284,7 @@ def test_glm_mtp_real_mro_applies_rename_only_mapping_before_predictor(
     assert patch_utils_module.PATCH_REGISTRY == records
     assert all(r.reason and r.remove_when for r in records)
     mapper = captured.hf_to_vllm_mapper
-    # 加载专用丢弃/堆叠/变换不能流入量化层列表；保留原 mapper 以独立比较。
+    # Load-only drops/stacks/transforms must not leak into quantized layer lists; keep original mapper for comparison.
     mapper.orig_to_new_substr = {"load_only": None}
     mapper.orig_to_new_stacked = {"gate_proj": ("wrong_fused", 0)}
     mapper.weights_transforms = [lambda weights: iter(())]
@@ -2348,7 +2348,7 @@ def test_glm_real_decoder_keeps_mtp_topk_layout_and_unsummed_residual(
     is_mtp,
     sequence_parallel,
 ):
-    """完整真实 decoder constructor/forward；注意力、MLP、norm 是显式数值边界。"""
+    """Full real decoder constructor/forward; attention, MLP, and norm are explicit numerical boundaries."""
     torch = pytest.importorskip("torch")
     attention_calls, mlp_calls, kda_calls = [], [], []
 

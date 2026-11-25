@@ -85,7 +85,7 @@ def test_upstream_ref_matches_the_verified_vllm_commit(shipped: m.Manifest) -> N
 def test_histogram_warp_reduction_uses_hggc_shuffle_fallback(
     shipped, operation, symbol
 ):
-    """检查实际生成 header；CUDA 兼容架构标识不得绕过 HGGC 门控。"""
+    """Check the actual generated header; CUDA-compatible arch macros must not bypass HGGC gating."""
     root = Path(__file__).resolve().parents[2]
     source = (root / "csrc/upstream/topk_histogram_4096.cuh").read_text()
     body = source.split(f"warp_reduce_{operation}_full(uint32_t v) {{", 1)[1].split(
@@ -107,12 +107,12 @@ def test_histogram_warp_reduction_uses_hggc_shuffle_fallback(
 def test_histogram_overlay_changes_only_real_upstream_architecture_guards(
     shipped, upstream_source_root, tmp_path
 ):
-    """对真实 header 执行生产 overlay；此处不模拟 SDK 或运行归约。"""
+    """Apply the production overlay to the real header; does not simulate the SDK or run reductions."""
     from vllm_sail.native import porting
 
     path = "csrc/topk_histogram_4096.cuh"
     source = (upstream_source_root / path).read_text()
-    # sailify 的架构标识映射先于 manifest overlay。
+    # sailify's architecture macro mapping runs before the manifest overlay.
     translated = source.replace("__CUDA_ARCH__", "COMPATIBLE_ARCH")
     unit = tmp_path / "topk_histogram_4096.cuh"
     unit.write_text(translated)
@@ -257,7 +257,7 @@ def test_every_vendored_hg_source_is_compiled(shipped: m.Manifest) -> None:
 
 
 def test_topk_split_corpus_compiles_all_instances_and_one_op_owner(shipped):
-    """检查真实生成布局；公共 header 不作为编译 TU，旧 TU 不得残留。"""
+    """Check real generated layout; shared headers are not compiled TUs and old TUs must not linger."""
     entries = [e for e in shipped if e.path.startswith("csrc/moe/topk_softplus_sqrt")]
     assert [e.path for e in entries] == [_TOPK_DISPATCH, *_TOPK_INSTANCES]
     assert entries[0].ops == ("topk_softplus_sqrt",)
@@ -295,7 +295,7 @@ def test_topk_split_corpus_compiles_all_instances_and_one_op_owner(shipped):
 def test_topk_real_instance_types_and_shared_header_closure(
     shipped, upstream_source_root, tmp_path, dtype, input_type, index, output_type
 ):
-    """真实 TU 经过生产闭包复制；recording translator 不证明 sailify 或设备计算。"""
+    """Real TUs go through production closure copying; recording translator does not prove sailify or device compute."""
     from vllm_sail.native import porting
 
     path = f"csrc/moe/topk_softplus_sqrt_{dtype}_{index}.cu"
@@ -345,7 +345,7 @@ def test_topk_real_instance_types_and_shared_header_closure(
 def test_topk_real_binding_pruner_preserves_complete_schema(
     shipped, upstream_source_root
 ):
-    """对完整真实 binding 使用生产 pruner；这里不替代真实 Torch schema parsing。"""
+    """Run the production pruner on the full real binding; does not substitute for real Torch schema parsing."""
     from vllm_sail.native import porting
 
     source = (upstream_source_root / "csrc/moe/torch_bindings.cpp").read_text()
@@ -378,7 +378,7 @@ def test_topk_real_binding_pruner_preserves_complete_schema(
 def test_topk_real_header_overlay_preserves_launch_arguments_and_kernel_body(
     shipped, upstream_source_root, tmp_path
 ):
-    """只替换已核实的名称以提供 post-sailify 边界；不证明 translator、SDK 或编译。"""
+    """Substitute only verified names to provide a post-sailify boundary; does not prove translator, SDK, or compilation."""
     from vllm_sail.native import porting
 
     source = (upstream_source_root / _TOPK_HEADER).read_text()
@@ -471,7 +471,7 @@ def test_accepted_regressions_are_excluded_and_stubbable(shipped: m.Manifest) ->
 def test_lut_b_sm107_exclusion_follows_real_conditional_binding(
     shipped, upstream_source_root
 ):
-    """生产 pruner 保留完整 compute schema；不执行 C++ 或 Torch schema parser。"""
+    """Production pruner preserves full compute schemas; does not run C++ or Torch schema parsing."""
     from vllm_sail.native import porting
     from vllm_sail.native.manifest import tomllib
 
@@ -522,7 +522,7 @@ def test_sm100_hc_exclusion_and_marlin_schemas_follow_real_bindings(
     shipped,
     upstream_source_root,
 ):
-    """对完整真实 binding 执行生产 pruner；不模拟 Torch schema parser 或设备。"""
+    """Run the production pruner on full real bindings; does not simulate Torch schema parsing or device execution."""
     from vllm_sail.native import porting
 
     name = "qwen4_exp_hc_up_gate_mix"

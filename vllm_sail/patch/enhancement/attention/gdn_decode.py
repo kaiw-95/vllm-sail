@@ -51,8 +51,8 @@ def compile_factors():
     factors = _upstream_compile_factors()
     if not current_platform.is_ppu():
         return factors
-    # auto 的 PLA 偏好会改变层的执行路径；JIT/AOT 共享此环境因子入口。
-    # 仅追加已解析的规范值，保留上游忽略项、其他 getter 和非 PPU 行为。
+    # The PLA preference under auto changes the layer execution path; JIT and AOT share this env-factor hook.
+    # Append only the resolved canonical value, preserving upstream ignores, other getters, and non-PPU behavior.
     return {**factors, "VLLM_SAIL_USE_PLA": envs.VLLM_SAIL_USE_PLA}
 
 

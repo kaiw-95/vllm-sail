@@ -207,7 +207,7 @@ def test_complete_reinitialization_body_keeps_only_context_invalidation(
 
 
 def _source_classes(modules, name, path, names, **globals_):
-    """保留真实 class body/decorators；模块导入和未触达的依赖不由此验证。"""
+    """Preserves real class body/decorators; module imports and unreached dependencies are not verified here."""
     import ast
 
     provider = modules(name, **globals_)
@@ -234,7 +234,7 @@ def _token_buffer_provider(modules, root):
 
 
 def _token_request_boundary(modules, root):
-    """真实存储/请求/输出/worker body；结构化输出、事件和 GC C API 是边界。"""
+    """Real storage/request/output/worker bodies; structured outputs, events, and GC C API are boundaries."""
     import enum
     import time
     from collections.abc import Sequence
@@ -378,7 +378,7 @@ def test_real_token_buffer_copies_remain_resizable_at_tensor_and_pickle_boundari
     provider.extend_from_slice(extended, tokens, 1, 4)
     assert extended == [2, 3, 4]
     assert list(provider.token_slice(tokens, 1, 3)) == [2, 3]
-    # SAIL 不替换 token 存储或 tensorize；真实 provider 的复制行为必须保留。
+    # SAIL does not replace token storage or tensorize; the real provider's copy behavior must be preserved.
     assert "token_ids_to_tensor" not in (ROOT / PATCH).read_text()
 
 
@@ -498,7 +498,7 @@ def test_real_new_request_pickle_keeps_prefill_alias_and_worker_token_boundaries
         **({"buffer_callback": buffers.append} if protocol == 5 else {}),
     )
     if protocol == 5:
-        # ndarray embedding 也可能出带外 buffer；这里只核查 token payload 及 prompt/prefill 去重。
+        # ndarray embeddings may also emit out-of-band buffers; only check token payloads and prompt/prefill dedup here.
         token_payloads = [data.prefill_token_ids.tobytes()]
         if data.prompt_token_ids is not None and not alias:
             token_payloads.append(data.prompt_token_ids.tobytes())
@@ -544,7 +544,7 @@ def test_real_new_request_pickle_keeps_prefill_alias_and_worker_token_boundaries
 
 
 def _request_block_hasher(state, root, lookahead=0):
-    """真实 hash/helper 链；摘要算法和初始 seed 固定为测试边界。"""
+    """Real hash/helper chain; digest algorithm and initial seed are fixed as test boundaries."""
     import bisect
     import hashlib
     from typing import NewType
@@ -788,7 +788,7 @@ def test_real_cached_scheduler_payloads_copy_int32_tokens_before_worker_transpor
 def test_real_input_batch_copies_token_buffers_and_keeps_logits_processor_views(
     modules, upstream_source_root, mode, reuse_slot
 ):
-    """真实完整 add/register body；构造器分配、block table 和 SamplingParams 是边界。"""
+    """Real full add/register bodies; constructor allocations, block tables, and SamplingParams are boundaries."""
     state = _token_request_boundary(modules, upstream_source_root)
     np = state.np
     embeds = np.zeros((3, 2)) if mode != "prompt" else None

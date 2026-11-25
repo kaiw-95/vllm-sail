@@ -805,7 +805,7 @@ def test_deepseek_v4_mxfp4_selector_preserves_activation_mode(
 def test_rocm_requant_does_not_select_aiter_on_ppu(
     upstream_source_root, monkeypatch, name
 ):
-    """PPU 的 CUDA 兼容身份不能触发 ROCm 专用权重重排。"""
+    """PPU's CUDA-compatible identity must not trigger ROCm-specific weight shuffling."""
     platforms = ModuleType("vllm.platforms")
     platforms.current_platform = SimpleNamespace(is_rocm=lambda: False)
     monkeypatch.setitem(sys.modules, "vllm.platforms", platforms)

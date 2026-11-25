@@ -139,7 +139,7 @@ def map_unquantized_backend(
 def select_unquantized_moe_backend(
     moe_config: FusedMoEConfig,
 ) -> tuple[UnquantizedMoeBackend, type[mk.FusedMoEExperts] | None]:
-    # LoRA 的布局门控和专家选择归 upstream；不得由 batched PPU 快分支绕过。
+    # LoRA layout gating and expert selection belong to upstream; do not bypass via the batched PPU fast path.
     if moe_config.is_lora_enabled:
         return _upstream_select_unquantized_moe_backend(moe_config)
     if (

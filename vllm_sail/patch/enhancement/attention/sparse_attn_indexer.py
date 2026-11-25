@@ -123,7 +123,7 @@ def sparse_attn_indexer_init(
     ]
     # PPU MODIFICATION: begin
     if current_platform.is_ppu():
-        # SAIL 默认保留 MXFP4 的 BF16 与 FP8/INT8 的 FP32 原生归约。
+        # SAIL defaults to native BF16 reduction for MXFP4 and native FP32 reduction for FP8/INT8.
         default = "bfloat16" if use_fp4_cache else "float32"
         self.logits_dtype = STR_DTYPE_TO_TORCH_DTYPE[
             vllm_config.attention_config.resolve_indexer_logits_dtype(default)

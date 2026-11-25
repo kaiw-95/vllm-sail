@@ -10,11 +10,13 @@ Until those changes are upstreamed, PPU stays on non-Marlin MoE paths:
 ``VLLM_PPU_ENABLE_MOE_MARLIN`` is explicitly set (default off; declared in
 ``vllm_sail/envs.py``).
 
-旧开关只控制 WNA16 的布局准入，不能提供被排除的 Marlin 计算内核。
-专家类和 dense 的计算准入必须独立拒绝 PPU；非 PPU 完整委托 upstream。
-保留原布局检查和 portable repack，供 PPU DeepGEMM 加载权重使用。
-公共 check/verify 也用于 MP 方法的量化配置验证，不能在选择非 Marlin 内核前拒绝。
-NVFP4 自动选择保留完整 upstream body，只取消 PPU 的强制 Marlin 快捷路径。
+The legacy switch only controls WNA16 layout gating and cannot supply excluded
+Marlin compute kernels. Expert and dense compute gates must independently reject
+PPU while delegating non-PPU execution verbatim to upstream. Original layout
+checks and portable repacking are preserved so PPU DeepGEMM can load weights.
+Shared check/verify helpers also validate mixed-precision quant configs and must
+not reject before non-Marlin kernel selection. NVFP4 auto-selection keeps the
+full upstream body and only disables the forced Marlin shortcut on PPU.
 """
 
 from __future__ import annotations
@@ -81,9 +83,17 @@ for _consumer in (
         )(gated_check_moe_marlin_supports_config)
 
 
-_COMPUTE_REASON = "PPU 的 CUDA 兼容标识会通过 upstream Marlin 检查，但生成 manifest 排除了 Marlin 计算内核。"
-_COMPUTE_REMOVE_WHEN = "Marlin 计算内核在 PPU manifest 中编译，并完成相应 device 验证。"
-_NO_PPU_MARLIN = "PPU 没有 Marlin 计算内核；portable 权重重排不代表 Marlin GEMM 可用。"
+_COMPUTE_REASON = (
+    "PPU's CUDA-compatible identity passes upstream Marlin checks, "
+    "but the generated manifest excludes Marlin compute kernels."
+)
+_COMPUTE_REMOVE_WHEN = (
+    "Marlin compute kernels are compiled in the PPU manifest and verified on device."
+)
+_NO_PPU_MARLIN = (
+    "PPU does not ship Marlin compute kernels; portable weight repacking "
+    "does not imply Marlin GEMM availability."
+)
 _upstream_device_check = MarlinExpertsBase._supports_current_device
 _upstream_can_implement = MarlinLinearKernel.can_implement.__func__
 _upstream_fp4_check = marlin_utils_fp4.is_fp4_marlin_supported
@@ -138,7 +148,7 @@ def gated_fp8_marlin_supported(*args, **kwargs):
     return _upstream_fp8_check(*args, **kwargs)
 
 
-# 仅模块级按值缓存需要重绑；函数内导入会直接取得 patched provider。
+# Only module-level by-value caches need rebinding; function-local imports pick up the patched provider directly.
 for _consumer, _name, _original, _replacement in (
     (
         "vllm.model_executor.kernels.linear.nvfp4.marlin",
@@ -158,12 +168,12 @@ for _consumer, _name, _original, _replacement in (
         patch(
             _consumer,
             _name,
-            reason="预加载的 dense Marlin 消费者必须观察同一 PPU 计算准入。",
-            remove_when="消费者不再按值缓存 Marlin capability probe。",
+            reason="Preloaded dense Marlin consumers must observe the same PPU compute gate.",
+            remove_when="Consumers no longer cache Marlin capability probes by value.",
         )(_replacement)
 
 
-# 完整借用第七日 upstream 的 NVFP4 selector；绑定真实 provider 的活跃 globals。
+# Full borrowed upstream NVFP4 selector; bind against the real provider's live globals.
 def init_nvfp4_linear_kernel(use_a16: bool = False) -> NvFp4LinearKernel:
     """Select and instantiate the best NVFP4 linear kernel for the
     current platform."""
@@ -215,7 +225,7 @@ def init_nvfp4_linear_kernel(use_a16: bool = False) -> NvFp4LinearKernel:
             force_kernel = FlashInferCuteDslNvFp4W4A16LinearKernel
         elif not prefers_humming(compute_capability):
             # PPU MODIFICATION: begin
-            # PPU 没有 Marlin 计算内核；继续 registry 选择，不能强制后再报错。
+            # PPU has no Marlin compute kernels; continue registry selection instead of forcing and failing.
             if not current_platform.is_ppu():
                 force_kernel = MarlinNvFp4LinearKernel
             # PPU MODIFICATION: end
@@ -289,8 +299,8 @@ _ppu_init_nvfp4 = bind_body(init_nvfp4_linear_kernel, linear_kernels)
 @patch(
     "vllm.model_executor.kernels.linear",
     "init_nvfp4_linear_kernel",
-    reason="PPU 的 NVFP4 自动选择不能强制不可用的 Marlin 而绕过 registry 回退。",
-    remove_when="upstream 的自动强制路径先检查计算内核支持并继续选择可用后端。",
+    reason="PPU NVFP4 auto-selection must not force unavailable Marlin and bypass registry fallback.",
+    remove_when="Upstream's auto-force path checks compute kernel support before selecting available backends.",
 )
 def gated_init_nvfp4_linear_kernel(*args, **kwargs):
     if current_platform.is_ppu():
@@ -312,6 +322,6 @@ for _consumer in (
         patch(
             _consumer,
             "init_nvfp4_linear_kernel",
-            reason="预加载的 NVFP4 消费者必须观察同一 PPU 自动选择策略。",
-            remove_when="消费者不再按值缓存 NVFP4 selector。",
+            reason="Preloaded NVFP4 consumers must observe the same PPU auto-selection policy.",
+            remove_when="Consumers no longer cache the NVFP4 selector by value.",
         )(gated_init_nvfp4_linear_kernel)
