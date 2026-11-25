@@ -137,7 +137,6 @@ def builder_factory(modules, patch_utils_module):
                     TARGET,
                     name,
                     reason="Reject a second query-layout override.",
-                    affected_versions=">=0.33.0,<0.34.0",
                     remove_when="The platform exposes query-layout capabilities.",
                 )(lambda: False)
         return provider.DeepseekV32IndexerMetadataBuilder, calls

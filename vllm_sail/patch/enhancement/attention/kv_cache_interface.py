@@ -15,7 +15,6 @@ from vllm.v1.kv_cache_interface import MLAAttentionSpec
 
 from vllm_sail.patch.utils import patch
 
-_AFFECTED = ">=0.32.0,<0.33.0"
 _MODULE = "vllm.v1.kv_cache_interface"
 
 
@@ -49,7 +48,6 @@ _upstream_merge = MLAAttentionSpec.merge.__func__
         "it accepts the two extra kwargs, delegates the rest, and stores them "
         "via object.__setattr__."
     ),
-    affected_versions=_AFFECTED,
     remove_when="upstream adds the indexer geometry fields to MLAAttentionSpec.",
 )
 def mla_attention_spec_init(
@@ -74,7 +72,6 @@ def mla_attention_spec_init(
         "group spec. Delegates to upstream merge, then copies the values from "
         "specs[0] onto the merged (frozen) spec."
     ),
-    affected_versions=_AFFECTED,
     remove_when="upstream adds the indexer geometry fields to MLAAttentionSpec.",
 )
 def mla_attention_spec_merge(cls, specs):
@@ -95,7 +92,6 @@ _upstream_hash = MLAAttentionSpec.__hash__
     _MODULE,
     "MLAAttentionSpec.__eq__",
     reason="Indexer geometry participates in KV spec grouping as in the PPU fork.",
-    affected_versions=_AFFECTED,
     remove_when="Upstream declares the indexer geometry dataclass fields.",
 )
 def mla_attention_spec_eq(self, other):
@@ -112,7 +108,6 @@ def mla_attention_spec_eq(self, other):
     _MODULE,
     "MLAAttentionSpec.__hash__",
     reason="Hash indexer geometry consistently with MLA spec equality.",
-    affected_versions=_AFFECTED,
     remove_when="Upstream declares the indexer geometry dataclass fields.",
 )
 def mla_attention_spec_hash(self):
@@ -130,7 +125,6 @@ def _extend_existing_subclass(cls):
     original_hash = cls.__hash__
     metadata = dict(
         reason="Existing MLA spec subclasses must retain geometry through dataclass operations.",
-        affected_versions=_AFFECTED,
         remove_when="Upstream declares the indexer geometry dataclass fields.",
     )
 

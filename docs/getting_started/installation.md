@@ -68,15 +68,15 @@ SDK, mirror and parallelism options. Continue with step 4 for runtime checks.
 
 Install a vLLM build with `VLLM_TARGET_DEVICE=empty` in the same environment.
 This lets the PPU plugin provide the native operations used by the engine.
-The supported release line is `>=0.32.0,<0.33.0`. Build the exact upstream commit
-recorded in [the verified pin](../../.github/vllm-main-verified.commit) and
+Build the exact upstream commit recorded in
+[the verified pin](../../.github/vllm-main-verified.commit) and
 [kernel manifest](../../csrc/upstream/manifest.toml); both records must agree.
-**v0.32.0** is the release baseline for this line.
 
-For a commit-pinned main build, the full upstream SHA establishes compatibility.
-The numeric prefix produced by setuptools-scm or `git describe` can depend on
-the tags present in the build checkout; it does not change the supported release
-range. Keep the full SHA in the wheel version and leave version overrides unset.
+For a commit-pinned main build, the full upstream SHA in the wheel version
+identifies the verified build; leave version overrides unset so runtime checks
+can observe it. At runtime, mismatches log a warning by default so you can test
+neighboring upstream builds with API and functional tests; set
+`VLLM_SAIL_STRICT_COMPAT=1` (as CI does) to fail closed instead.
 
 Use a matching wheel supplied with your PPU environment, or build that upstream
 source pin. For a source build, prepare vLLM's build and runtime dependencies

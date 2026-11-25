@@ -19,7 +19,6 @@ def test_patch_report_is_sorted_and_escapes_cells():
             target=target,
             kind="module",
             reason=reason,
-            affected_versions=">=1,<2",
             remove_when="upstream adds hook",
         )
 

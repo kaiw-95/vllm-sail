@@ -1435,7 +1435,6 @@ def test_every_oracle_patch_records_original_and_rejects_reapplication(
                 module_name,
                 attribute,
                 reason=record.reason,
-                affected_versions=record.affected_versions,
                 remove_when=record.remove_when,
             )(replacement)
 

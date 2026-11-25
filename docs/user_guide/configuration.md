@@ -259,14 +259,17 @@ graph replay bypassing module hooks.
 
 ## Version metadata
 
-Commit-pinned installations must report the full source SHA recorded in the
-packaged kernel manifest. Leave `VLLM_VERSION` and `VLLM_VERSION_OVERRIDE` unset
-so the plugin can verify that identity.
+`vllm_sail.compat.check_vllm_compatibility()` checks the installed vLLM build
+against the `upstream_ref` recorded in the packaged kernel manifest
+(`csrc/upstream/manifest.toml`). By default, a mismatch logs a warning and
+continues so developers can validate neighboring upstream commits via API and
+functional tests; set `VLLM_SAIL_STRICT_COMPAT=1` (used in CI) to fail closed
+with a `RuntimeError`.
 
-For release-tag metadata, `VLLM_VERSION` can state the actual release base when a
-source build reports an ambiguous version. Use `VLLM_VERSION=0.32.0` only for a
-checkout verified against that release. Commit-pinned installations still
-require their full source SHA.
+Commit-pinned installations match against the full 40-character source SHA.
+Leave `VLLM_VERSION` and `VLLM_VERSION_OVERRIDE` unset so the plugin can observe
+that identity. For release-tag manifests, `VLLM_VERSION` can state the actual
+release version when a source build reports an ambiguous SCM prefix.
 
 ## Inspect the active environment
 

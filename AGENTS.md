@@ -62,8 +62,8 @@ making hardware or model-support claims.
 - Module and dependency boundaries: [Architecture](docs/developer_guide/architecture.md).
   PPU reuses CUDA paths; use `current_platform.is_ppu()` for PPU-only behavior.
 - Patches: [Runtime patch guide](vllm_sail/patch/README.md). Try registration APIs,
-  platform hooks and attention extensions first. Every patch requires `reason`,
-  `affected_versions` and `remove_when`.
+  platform hooks and attention extensions first. Every patch requires `reason`
+  and `remove_when`.
 - Native code and toolchains: [HGGC kernels](docs/developer_guide/kernels.md).
   Preserve upstream interface identifiers used by SAIL PyTorch.
 - Installation: [Installation guide](docs/getting_started/installation.md).

@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING, Any
 # ---------------------------------------------------------------------------
 if TYPE_CHECKING:
     PPU_SDK: str = "/usr/local/PPU_SDK"
+    VLLM_SAIL_STRICT_COMPAT: bool = False
     VLLM_SAIL_FUSED_RMSNORM_QUANT: bool = False
     VLLM_SAIL_USE_OPT_TOKEN_GROUP_QUANT: bool = False
     VLLM_SAIL_DENSE_BF16_DEEPGEMM: bool = False
@@ -74,6 +75,7 @@ if TYPE_CHECKING:
     VLLM_GDN_DECODE_KERNEL: str = "auto"
 
     # Backward-compatible Python attributes; all reads resolve SAIL first.
+    VLLM_PPU_STRICT_COMPAT: bool = False
     VLLM_PPU_FUSED_RMSNORM_QUANT: bool = False
     VLLM_PPU_USE_OPT_TOKEN_GROUP_QUANT: bool = False
     VLLM_PPU_DENSE_BF16_DEEPGEMM: bool = False
@@ -310,6 +312,15 @@ ENVIRONMENT_SPECS: tuple[EnvSpec, ...] = (
         section="Runtime environment",
         default="/usr/local/PPU_SDK",
         description="SAIL SDK root used at runtime.",
+    ),
+    _bool_spec(
+        "VLLM_SAIL_STRICT_COMPAT",
+        section="Runtime environment",
+        default=False,
+        description=(
+            "Fail closed when the installed vLLM build does not match the "
+            "verified upstream ref in the packaged kernel manifest (default: warn)."
+        ),
     ),
     # -- Backend selection -------------------------------------------------
     # PPU MoE group-GEMM backend. Unset means "pick the best available",

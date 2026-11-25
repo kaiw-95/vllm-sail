@@ -86,7 +86,6 @@ def install():
             "auto-fit estimate. Refit automatic lengths to measured capacity "
             "and synchronize workers before admitting requests."
         ),
-        affected_versions=">=0.32.0,<0.33.0",
         remove_when=(
             "Upstream extensible KV finalization repeats auto-fit and updates "
             "worker context limits after measured sizing."

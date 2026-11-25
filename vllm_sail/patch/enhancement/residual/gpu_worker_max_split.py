@@ -28,7 +28,6 @@ REASON = (
     "20 to 32 MiB; upstream's Worker.load_model requests 20, which PPU's "
     "allocator rejects during weight loading."
 )
-AFFECTED_VERSIONS = ">=0.32.0,<0.33.0"
 REMOVE_WHEN = (
     "PPU torch accepts max_split_size_mb=20 again (its CachingAllocator floor "
     "matches stock PyTorch), or upstream makes the floor platform-queryable."
@@ -36,7 +35,7 @@ REMOVE_WHEN = (
 
 #: (target, reason, affected versions, remove_when) for every patch installed
 #: by this module. Read by the metadata-shape unit tests.
-METADATA = ((f"{_MODULE}.{_TARGET}", REASON, AFFECTED_VERSIONS, REMOVE_WHEN),)
+METADATA = ((f"{_MODULE}.{_TARGET}", REASON, REMOVE_WHEN),)
 
 _upstream_scoped_max_split = None
 _installed = False
@@ -57,7 +56,6 @@ def install() -> None:
         _MODULE,
         _TARGET,
         reason=REASON,
-        affected_versions=AFFECTED_VERSIONS,
         remove_when=REMOVE_WHEN,
     )
     @contextlib.contextmanager

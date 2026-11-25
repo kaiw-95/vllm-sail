@@ -196,7 +196,6 @@ def test_decode_patches_record_originals_and_reject_reapplication(
             module,
             target,
             reason="GDN lifecycle regression",
-            affected_versions=">=0.31.0,<0.32.0",
             remove_when="upstream registers platform GDN backends",
         )(lambda *a, **kw: None)
 

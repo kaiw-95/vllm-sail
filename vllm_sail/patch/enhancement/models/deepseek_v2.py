@@ -56,8 +56,6 @@ from vllm.platforms import current_platform
 
 from vllm_sail.patch.utils import patch
 
-_AFFECTED = ">=0.32.0,<0.33.0"
-
 # Captured before patching so delegating replacements can call upstream.
 _upstream_indexer_init = Indexer.__init__
 _upstream_model_init = DeepseekV2Model.__init__
@@ -77,7 +75,6 @@ def _is_fp4_ckpt(quant_config) -> bool:
         "FP8 support. Delegates to upstream, then rebuilds the projection and "
         "sets the PPU flags."
     ),
-    affected_versions=_AFFECTED,
     remove_when=(
         "upstream parameterises the Indexer wk projection on quant_config "
         "and exposes a platform hook for the q-quant format."
@@ -149,7 +146,6 @@ def indexer_init(
         "FP8 support. Verbatim upstream body with two marked branches; the "
         "changes sit mid-body with no delegation seam."
     ),
-    affected_versions=_AFFECTED,
     remove_when=(
         "upstream parameterises the Indexer wk projection on quant_config "
         "and exposes a platform hook for the q-quant format."
@@ -268,7 +264,6 @@ def forward(
         "Adds the is_fp4_ckpt flag the load_weights patch keys the fused "
         "indexer-wk weight mapping on. Delegates to upstream unchanged."
     ),
-    affected_versions=_AFFECTED,
     remove_when=(
         "upstream load_weights stops special-casing modelopt_fp4 indexer "
         "weights, making the flag unused."
@@ -291,7 +286,6 @@ def model_init(self, *, vllm_config, prefix: str = ""):
         "Verbatim upstream body with two marked guards; both control "
         "method-local loader tables, so delegation is impossible."
     ),
-    affected_versions=_AFFECTED,
     remove_when=(
         "upstream load_weights stops special-casing modelopt_fp4 indexer "
         "weights, making both guards no-ops."

@@ -38,8 +38,6 @@ from vllm.model_executor.models.utils import (
 
 from vllm_sail.patch.utils import patch
 
-_AFFECTED = ">=0.32.0,<0.33.0"
-
 # Captured before patching so the delegating replacement can call upstream.
 _upstream_init = DeepSeekMTP.__init__
 
@@ -51,7 +49,6 @@ _upstream_init = DeepSeekMTP.__init__
         "Adds the is_fp4_ckpt flag the load_weights patch keys the fused "
         "indexer-wk weight mapping on. Delegates to upstream unchanged."
     ),
-    affected_versions=_AFFECTED,
     remove_when=(
         "upstream load_weights stops special-casing modelopt_fp4 indexer "
         "weights, making the flag unused."
@@ -77,7 +74,6 @@ def init(self, *, vllm_config, prefix: str = ""):
         "Verbatim upstream body with two marked guards; both control "
         "method-local loader tables, so delegation is impossible."
     ),
-    affected_versions=_AFFECTED,
     remove_when=(
         "upstream load_weights stops special-casing modelopt_fp4 indexer "
         "weights, making both guards no-ops."

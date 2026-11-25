@@ -40,7 +40,7 @@ device validation.
 
 Use a vLLM checkout at the manifest's exact `upstream_ref`, matching
 [the verified pin](../../.github/vllm-main-verified.commit), and make sailify
-available. The supported release baseline is `v0.32.0`.
+available.
 
 ```bash
 export PYTHONPATH=/path/to/sailify${PYTHONPATH:+:$PYTHONPATH}

@@ -5,8 +5,8 @@ Two tiers, following the suite's established split:
 
 * Bare CPU (no vLLM, no torch required): every module in
   ``vllm_sail/patch/enhancement/models/`` is parsed with ``ast`` and must
-  carry well-formed mandatory metadata (``reason`` / ``affected_versions``
-  / ``remove_when``) on every ``@patch`` call. The patch modules themselves
+  carry well-formed mandatory metadata (``reason`` / ``remove_when``) on
+  every ``@patch`` call. The patch modules themselves
   import their vLLM targets at import time — that is the framework's
   convention (see ``custom_op_dispatch.py``) — so actually importing them
   is gated on vLLM being installed, exactly like ``test_patch_install.py``.
@@ -75,7 +75,7 @@ EXPECTED_MODULES = {
     "step5_soft_fp8",
 }
 
-REQUIRED_METADATA = ("reason", "affected_versions", "remove_when")
+REQUIRED_METADATA = ("reason", "remove_when")
 
 
 def _patch_module_files() -> list[pathlib.Path]:
@@ -976,7 +976,6 @@ def test_reapplication_raises(installed_model_patches) -> None:
             "vllm.model_executor.models.llama4",
             "Llama4MoE.custom_routing_function",
             reason="test",
-            affected_versions=">=0.27.0,<0.28.0",
             remove_when="never; test-only",
         )
         def custom_routing_function(*args, **kwargs):
@@ -1226,10 +1225,7 @@ def test_real_marlin_compute_admission_rejects_ppu_but_preserves_layout(
         assert getattr(sys.modules[consumer], name) is getattr(provider, name)
     records = patch_utils_module.PATCH_REGISTRY
     assert len(records) == (14 if preloaded else 6)
-    assert all(
-        r.affected_versions == ">=0.32.0,<0.33.0" and r.reason and r.remove_when
-        for r in records
-    )
+    assert all(r.reason and r.remove_when for r in records)
     target = "vllm.model_executor.layers.fused_moe.experts.marlin_moe.MarlinExpertsBase._supports_current_device"
     assert (
         patch_utils_module.original_of(state.experts._supports_current_device, target)
@@ -1259,7 +1255,6 @@ def test_real_marlin_compute_admission_rejects_ppu_but_preserves_layout(
             "vllm.model_executor.layers.fused_moe.experts.marlin_moe",
             "MarlinExpertsBase._supports_current_device",
             reason="test",
-            affected_versions=">=0.32.0,<0.33.0",
             remove_when="test-only",
         )(lambda: True)
 
@@ -2287,7 +2282,7 @@ def test_glm_mtp_real_mro_applies_rename_only_mapping_before_predictor(
     patch_module._enable_supports_quant()
     patch_module._enable_packed_modules_mapping()
     assert patch_utils_module.PATCH_REGISTRY == records
-    assert all(r.affected_versions == ">=0.32.0,<0.33.0" for r in records)
+    assert all(r.reason and r.remove_when for r in records)
     mapper = captured.hf_to_vllm_mapper
     # 加载专用丢弃/堆叠/变换不能流入量化层列表；保留原 mapper 以独立比较。
     mapper.orig_to_new_substr = {"load_only": None}

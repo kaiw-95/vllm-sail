@@ -52,7 +52,6 @@ _TARGET = "_try_load_fp8_attn_proj"
 #: carry no ``mtp`` module - so listing a platform copy here would be dead code
 #: that the patch contract check rejects as a missing target.
 _CONSUMERS = ("vllm.models.glm5next.common.mtp",)
-_AFFECTED = ">=0.32.0,<0.33.0"
 _installed = False
 #: True when the upstream glm5next model cannot be imported (older transformers).
 _unavailable = False
@@ -221,7 +220,6 @@ def install() -> None:
             "(FP8-PerChannel checkpoints) row-wise; upstream's block-only map "
             "materialises an out*in tensor and fails on those checkpoints."
         ),
-        affected_versions=_AFFECTED,
         remove_when=(
             "upstream glm5next passes the quant config to Glm5NextMLAAttention for "
             "INT8 checkpoints, handles per-channel FP8 MLA projections, or "
@@ -257,7 +255,6 @@ def install() -> None:
                 "broadcast dies on the whole-layer scale. Rebind the alias to "
                 "the same replacement the model module got."
             ),
-            affected_versions=_AFFECTED,
             remove_when=(
                 "upstream glm5next calls this helper through the model module "
                 "instead of an import-time alias, or handles per-channel FP8 "

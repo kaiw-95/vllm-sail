@@ -12,7 +12,7 @@ support for a specific deployment.
 | Hardware | Zhenwu 810E and Zhenwu M890 AI chips |
 | Native targets | Zhenwu 810E (`ppu_10`, compute capability 8.0) and Zhenwu M890 (`ppu_15`, compute capability 8.9) |
 | Bundled tuning data | Configurations include `PPU-ZW810` and `PPU-ZW810E` (Zhenwu 810E) and `ZW-M890P` (Zhenwu M890); coverage varies by shape and backend |
-| vLLM | `>=0.32.0,<0.33.0` release line; exact commit in [verified pin](../../.github/vllm-main-verified.commit) and [kernel manifest](../../csrc/upstream/manifest.toml), with v0.32.0 as the release baseline |
+| vLLM | Verified upstream ref in [verified pin](../../.github/vllm-main-verified.commit) and [kernel manifest](../../csrc/upstream/manifest.toml), built with `VLLM_TARGET_DEVICE=empty` |
 | Python | 3.10–3.13 for the plugin and CPU test matrix; SDK wheel availability determines runtime combinations |
 
 A tuned configuration describes a measured kernel shape. It does not establish

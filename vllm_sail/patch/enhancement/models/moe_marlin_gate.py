@@ -37,8 +37,6 @@ import vllm_sail.envs as ppu_envs
 from vllm_sail.patch.bodies import bind_body
 from vllm_sail.patch.utils import patch
 
-_AFFECTED = ">=0.32.0,<0.33.0"
-
 # Captured before patching so the replacement can delegate to upstream.
 _upstream_check = check_moe_marlin_supports_config
 # The layout check is also used by PPU DeepGEMM weight preparation.
@@ -54,7 +52,6 @@ supports_marlin_layout = _upstream_check
         "MoE paths (phase-1 spec 1.8, decision (c)). Delegates to upstream "
         "unless PPU has the opt-out env var left at its default (off)."
     ),
-    affected_versions=_AFFECTED,
     remove_when=(
         "the Marlin PPU kernel edits are upstreamed (or rebuilt inside "
         "vllm_sail._moe_C) and VLLM_PPU_ENABLE_MOE_MARLIN defaults on."
@@ -80,7 +77,6 @@ for _consumer in (
             _consumer,
             "check_moe_marlin_supports_config",
             reason="Preloaded WNA16 consumers must observe the PPU Marlin capability gate.",
-            affected_versions=_AFFECTED,
             remove_when="WNA16 consumers resolve Marlin capabilities through the provider module.",
         )(gated_check_moe_marlin_supports_config)
 
@@ -98,7 +94,6 @@ _upstream_fp8_check = marlin_utils_fp8.is_fp8_marlin_supported
     "vllm.model_executor.layers.fused_moe.experts.marlin_moe",
     "MarlinExpertsBase._supports_current_device",
     reason=_COMPUTE_REASON,
-    affected_versions=_AFFECTED,
     remove_when=_COMPUTE_REMOVE_WHEN,
 )
 def gated_marlin_experts_device():
@@ -111,7 +106,6 @@ def gated_marlin_experts_device():
     "vllm.model_executor.kernels.linear.mixed_precision.marlin",
     "MarlinLinearKernel.can_implement",
     reason=_COMPUTE_REASON,
-    affected_versions=_AFFECTED,
     remove_when=_COMPUTE_REMOVE_WHEN,
 )
 def gated_marlin_linear_can_implement(cls, *args, **kwargs):
@@ -124,7 +118,6 @@ def gated_marlin_linear_can_implement(cls, *args, **kwargs):
     "vllm.model_executor.layers.quantization.utils.marlin_utils_fp4",
     "is_fp4_marlin_supported",
     reason=_COMPUTE_REASON,
-    affected_versions=_AFFECTED,
     remove_when=_COMPUTE_REMOVE_WHEN,
 )
 def gated_fp4_marlin_supported(*args, **kwargs):
@@ -137,7 +130,6 @@ def gated_fp4_marlin_supported(*args, **kwargs):
     "vllm.model_executor.layers.quantization.utils.marlin_utils_fp8",
     "is_fp8_marlin_supported",
     reason=_COMPUTE_REASON,
-    affected_versions=_AFFECTED,
     remove_when=_COMPUTE_REMOVE_WHEN,
 )
 def gated_fp8_marlin_supported(*args, **kwargs):
@@ -167,7 +159,6 @@ for _consumer, _name, _original, _replacement in (
             _consumer,
             _name,
             reason="预加载的 dense Marlin 消费者必须观察同一 PPU 计算准入。",
-            affected_versions=_AFFECTED,
             remove_when="消费者不再按值缓存 Marlin capability probe。",
         )(_replacement)
 
@@ -299,7 +290,6 @@ _ppu_init_nvfp4 = bind_body(init_nvfp4_linear_kernel, linear_kernels)
     "vllm.model_executor.kernels.linear",
     "init_nvfp4_linear_kernel",
     reason="PPU 的 NVFP4 自动选择不能强制不可用的 Marlin 而绕过 registry 回退。",
-    affected_versions=_AFFECTED,
     remove_when="upstream 的自动强制路径先检查计算内核支持并继续选择可用后端。",
 )
 def gated_init_nvfp4_linear_kernel(*args, **kwargs):
@@ -323,6 +313,5 @@ for _consumer in (
             _consumer,
             "init_nvfp4_linear_kernel",
             reason="预加载的 NVFP4 消费者必须观察同一 PPU 自动选择策略。",
-            affected_versions=_AFFECTED,
             remove_when="消费者不再按值缓存 NVFP4 selector。",
         )(gated_init_nvfp4_linear_kernel)

@@ -285,7 +285,6 @@ patch(
         "PPU requires its Triton implementation. The common attention and "
         "indexer constructors do not share a compressor factory hook."
     ),
-    affected_versions=">=0.32.0,<0.33.0",
     remove_when="The compression helper selects kernels through platform capabilities.",
 )(bind_body(_compress_norm_rope_store, _compressor))
 
@@ -298,6 +297,5 @@ patch(
         "identity, bypassing has_cutedsl and the PPU forward guard. PPU must "
         "register the common Triton warmup instead."
     ),
-    affected_versions=">=0.32.0,<0.33.0",
     remove_when="DeepseekCompressor gates warmup registration on backend capabilities.",
 )(bind_body(__init__, _compressor))

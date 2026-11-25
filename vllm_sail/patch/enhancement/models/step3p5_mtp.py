@@ -22,8 +22,6 @@ from vllm.model_executor.models.utils import get_spec_layer_idx_from_weight_name
 
 from vllm_sail.patch.utils import patch
 
-_AFFECTED = ">=0.32.0,<0.33.0"
-
 
 @patch(
     "vllm.model_executor.models.step3p5_mtp",
@@ -34,7 +32,6 @@ _AFFECTED = ">=0.32.0,<0.33.0"
         "zero-point suffixes to the optional-parameter set. Verbatim "
         "upstream body with one marked block; the set is method-local."
     ),
-    affected_versions=_AFFECTED,
     remove_when=(
         "upstream's optional_params set in Step3p5MTP.load_weights includes "
         "the zero_point suffixes itself."

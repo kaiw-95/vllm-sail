@@ -18,7 +18,6 @@ from vllm_sail.patch.utils import patch
 
 logger = init_logger(__name__)
 
-_AFFECTED = ">=0.32.0,<0.33.0"
 _REMOVE_WHEN = "Upstream V1/V2 natively support draft/MTP Layer NVTX and deduplicate shared modules."
 _INSTALLED: set[str] = set()
 
@@ -137,7 +136,6 @@ def install() -> None:
                 module_path,
                 "GPUModelRunner._register_layerwise_nvtx_hooks",
                 reason="[profiling, config-gated] Per-layer markers for V1/V2 target and draft/MTP with shared-module dedup.",
-                affected_versions=_AFFECTED,
                 remove_when=_REMOVE_WHEN,
                 allow_missing=is_v2,
             )(register)
@@ -157,7 +155,6 @@ def _install_v2_dummy_run(module_path, original):
         module_path,
         "GPUModelRunner._dummy_run",
         reason="[profiling, config-gated] Register Layer NVTX after the first V2 target/draft dummy forwards finish.",
-        affected_versions=_AFFECTED,
         remove_when=_REMOVE_WHEN,
     )
     @functools.wraps(original)

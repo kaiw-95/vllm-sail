@@ -27,8 +27,6 @@ from vllm.v1.worker.gpu_model_runner import GPUModelRunner
 from vllm_sail.patch.utils import patch
 from vllm_sail.profiling import nvtx
 
-_AFFECTED = ">=0.32.0,<0.33.0"
-
 #: Where the execute_model wrapper stashes the scheduler output so the
 #: _model_forward wrapper can label the forward range like the fork did.
 _STASH = "_ppu_nvtx_prof_scheduler_output"
@@ -48,7 +46,6 @@ _upstream_execute_model = GPUModelRunner.execute_model
         "worker-level NVTX iteration ranges (fork gpu_model_runner.py hunk "
         "@@ -469). Installed only when VLLM_SAIL_NVTX_PROFILE is set."
     ),
-    affected_versions=_AFFECTED,
     remove_when=(
         "the opt-in NVTX subpackage (docs/developer_guide/architecture.md) "
         "is retired, or upstream adds native NVTX/tracing hooks to the v1 "
@@ -68,7 +65,6 @@ def runner_init(self, *args, **kwargs):
         "PPU fork (fork gpu_model_runner.py hunk @@ -1957). The wrapper "
         "delegates to upstream unchanged."
     ),
-    affected_versions=_AFFECTED,
     remove_when=(
         "the opt-in NVTX subpackage (docs/developer_guide/architecture.md) "
         "is retired, or upstream adds native NVTX/tracing hooks to the v1 "
@@ -89,7 +85,6 @@ def _prepare_inputs(self, *args, **kwargs):
         "gpu_model_runner.py hunk @@ -3695). The fork's push/pop already "
         "aligned with this method's boundaries, so the range is exact."
     ),
-    affected_versions=_AFFECTED,
     remove_when=(
         "the opt-in NVTX subpackage (docs/developer_guide/architecture.md) "
         "is retired, or upstream adds native NVTX/tracing hooks to the v1 "
@@ -114,7 +109,6 @@ def _sample(self, logits, spec_decode_metadata):
         "output that the execute_model wrapper stashes on the runner; "
         "without it (dummy runs, other callers) the call is uninstrumented."
     ),
-    affected_versions=_AFFECTED,
     remove_when=(
         "the opt-in NVTX subpackage (docs/developer_guide/architecture.md) "
         "is retired, or upstream adds native NVTX/tracing hooks to the v1 "
@@ -144,7 +138,6 @@ def _model_forward(self, *args, **kwargs):
         "spans the whole method, so those iterations get a range too. The "
         "model compute_logits calls receive their own shape-aware range."
     ),
-    affected_versions=_AFFECTED,
     remove_when=(
         "the opt-in NVTX subpackage (docs/developer_guide/architecture.md) "
         "is retired, or upstream adds native NVTX/tracing hooks to the v1 "
