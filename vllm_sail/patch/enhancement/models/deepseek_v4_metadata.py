@@ -17,7 +17,7 @@ _METADATA = dict(
 )
 _cache_init = attention.DeepseekV4IndexerCache.__init__
 _indexer_init = attention.DeepseekV4Indexer.__init__
-_cache_spec = attention.DeepseekV4IndexerCache.get_kv_cache_spec
+_cache_spec = attention.DeepseekV4IndexerCache.get_kv_cache_config
 
 
 @patch(
@@ -47,14 +47,16 @@ def indexer_init(self, *args, **kwargs):
 
 @patch(
     _MODULE,
-    "DeepseekV4IndexerCache.get_kv_cache_spec",
+    "DeepseekV4IndexerCache.get_kv_cache_config",
     reason="PPU paged logits metadata needs the indexer query head count and dimension.",
     remove_when="DeepseekV4Indexer propagates query dimensions into its MLA cache spec.",
 )
-def get_kv_cache_spec(self, vllm_config):
-    spec = _cache_spec(self, vllm_config)
+def get_kv_cache_config(self, vllm_config):
+    layer = _cache_spec(self, vllm_config)
+    spec = layer.spec
     if current_platform.is_ppu():
         spec = replace(
             spec, indexer_n_head=self.n_head, indexer_q_head_dim=self.q_head_dim
         )
-    return spec
+        return replace(layer, spec=spec)
+    return layer

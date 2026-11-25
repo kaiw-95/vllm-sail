@@ -73,11 +73,14 @@ def test_version_key_unparseable(compat, version: str) -> None:
     assert compat._version_key(version) is None
 
 
-def test_installed_version_env_override(
+def test_release_tag_uses_version_env_override(
     compat, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setattr(compat, "_upstream_ref", lambda: "v0.33.0")
+    monkeypatch.setattr(compat, "installed_vllm_version", lambda: "0.1.dev1")
     monkeypatch.setenv("VLLM_VERSION", " 0.33.0 ")
-    assert compat.installed_vllm_version() == "0.33.0"
+    compat.check_vllm_compatibility(strict=True)
+    assert compat._last_matched
 
 
 def test_no_hardcoded_version_range_constants(compat) -> None:
@@ -211,12 +214,16 @@ def test_strict_env_var_enables_fail_closed_check(
     compat.check_vllm_compatibility(force=True, strict=False)
 
 
-def test_exact_main_pin_cannot_be_replaced_with_numeric_override_in_strict_mode(
-    compat, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("override", ["0.33.0", f"0.33.0.dev1+g{PIN}"])
+def test_exact_main_pin_ignores_version_env_override(
+    compat, monkeypatch: pytest.MonkeyPatch, override: str
 ) -> None:
-    monkeypatch.setenv("VLLM_VERSION", "0.33.0")
+    monkeypatch.setenv("VLLM_VERSION", override)
+    monkeypatch.setattr(compat, "installed_vllm_version", lambda: "0.33.0")
     with pytest.raises(RuntimeError, match="verified vLLM commit"):
-        compat.check_vllm_compatibility(force=True, strict=True)
+        compat.check_vllm_compatibility(strict=True)
+    monkeypatch.setattr(compat, "installed_vllm_version", lambda: f"0.33.0.dev1+g{PIN}")
+    compat.check_vllm_compatibility(strict=True)
 
 
 @pytest.mark.parametrize(

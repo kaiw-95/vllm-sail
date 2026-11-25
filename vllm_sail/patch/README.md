@@ -93,12 +93,10 @@ That is what makes the next upstream bump a diff rather than an investigation.
 
 ### Borrowed bodies and direct source contracts
 
-The runtime pilot separates `enhancement/runtime.py` (installation, PPU dispatch
-and loaded-consumer rebinding) from `_upstream/runtime.py` (two maintained vLLM
-bodies with limited PPU changes). These bodies are not deterministically
-generated. Their source revision records reviewed provenance and does not select
-a runtime version. Bind each body to its own provider with `bind_body` so globals
-remain live; do not combine the sampler and model runner namespaces.
+Borrowed bodies are not deterministically generated. Their source revision
+records reviewed provenance and does not select a runtime version. Bind each
+body to its own provider with `bind_body` so globals remain live; keep distinct
+upstream namespaces in separate providers.
 
 CPU tests verify framework and feature behavior without importing the complete
 patch set. With `VLLM_SOURCE_ROOT` set to the pinned checkout, source tests check

@@ -41,17 +41,7 @@ def _is_commit_sha(ref: str) -> bool:
 
 
 def installed_vllm_version() -> str:
-    """The installed vLLM version string.
-
-    ``VLLM_VERSION`` overrides the detected value when running against a
-    release-tag manifest with a source checkout whose SCM version cannot
-    identify its release line. An exact commit-SHA manifest still requires the
-    full 40-character commit hash.
-    """
-    override = os.getenv("VLLM_VERSION")
-    if override:
-        return override.strip()
-
+    """Read the version reported by the installed vLLM package."""
     try:
         from vllm.version import __version__
 
@@ -91,9 +81,7 @@ def _mismatch_reason(version: str, ref: str) -> str | None:
         return (
             f"vllm-sail {_plugin_version()} was built against verified vLLM commit "
             f"{ref}, but the installed vLLM version is {version!r}. Build that "
-            "exact source with the full SCM commit hash and unset VLLM_VERSION "
-            "and VLLM_VERSION_OVERRIDE, or run without VLLM_SAIL_STRICT_COMPAT "
-            "to continue with a warning."
+            "exact source with the full SCM commit hash."
         )
 
     ref_key = _version_key(ref)
@@ -140,8 +128,11 @@ def check_vllm_compatibility(
     _checked = False
     _last_matched = False
 
-    version = installed_vllm_version()
     ref = _upstream_ref()
+    # Only release-line checks accept a developer-supplied version. Commit
+    # checks must read the identity recorded in the installed build.
+    override = None if _is_commit_sha(ref) else os.getenv("VLLM_VERSION")
+    version = override.strip() if override else installed_vllm_version()
     mismatch = _mismatch_reason(version, ref)
     if mismatch is None:
         _checked = True

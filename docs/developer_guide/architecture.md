@@ -85,8 +85,8 @@ already-loaded aliases, including optional modules.
 NVTX range instrumentation installs only when `VLLM_SAIL_NVTX_PROFILE` is enabled
 and the required profiling libraries are available. Separately,
 [`vllm_sail/profiling/layerwise.py`](../../vllm_sail/profiling/layerwise.py)
-installs config-gated hooks for `--enable-layerwise-nvtx-tracing` across V1/V2
-target and draft/MTP models without requiring `VLLM_SAIL_NVTX_PROFILE` or PyPI
+installs config-gated hooks for `--enable-layerwise-nvtx-tracing` for the V2
+runner's target and draft/MTP models without requiring `VLLM_SAIL_NVTX_PROFILE` or PyPI
 `nvtx`. Core inference and the CPU test environment must remain usable without
 profiling dependencies. Keep instrumentation scoped to the lifecycle and
 operation it measures.

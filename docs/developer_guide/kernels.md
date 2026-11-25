@@ -99,6 +99,7 @@ The wheel must contain these native libraries:
 | `vllm_sail._upstream_moe_C` | Selected upstream MoE operations |
 | `vllm_sail._C` | Plugin BF16 sampler and Step-5 native prefill / DSA radix selector operations |
 | `vllm_sail._moe_C` | Plugin expert-parallel scatter operations |
+| `vllm_sail._cumem_allocator` | Host-only HGGC virtual memory allocator for Sleep Mode |
 
 Inspect the artifact, replacing the path with the wheel just built:
 
@@ -109,10 +110,10 @@ import zipfile
 
 with zipfile.ZipFile(sys.argv[1]) as wheel:
     names = wheel.namelist()
-for module in ('_upstream_C', '_upstream_moe_C', '_C', '_moe_C'):
+for module in ('_upstream_C', '_upstream_moe_C', '_C', '_moe_C', '_cumem_allocator'):
     assert any(name.startswith(f'vllm_sail/{module}.') and name.endswith('.so')
                for name in names), f'missing native extension: {module}'
-print('All four native extensions are present')
+print('All five native extensions are present')
 PY
 ```
 

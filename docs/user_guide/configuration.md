@@ -251,8 +251,8 @@ root. The SAIL SDK's optional `model_prof` package adds iteration hooks, and
 `python -m vllm_sail.benchmarks.serve` provides a profiling-aware serving
 benchmark wrapper (`--skip-first-concurrency`).
 
-Separately, `--enable-layerwise-nvtx-tracing` is extended on PPU for V1/V2
-target and draft/MTP models with shared-module deduplication. It does not
+Separately, `--enable-layerwise-nvtx-tracing` is extended on PPU for the V2
+runner's target and draft/MTP models with shared-module deduplication. It does not
 require `VLLM_SAIL_NVTX_PROFILE` or the optional `nvtx` package; use
 `--enforce-eager` to observe per-layer markers without compilation or CUDA
 graph replay bypassing module hooks.
@@ -266,10 +266,10 @@ continues so developers can validate neighboring upstream commits via API and
 functional tests; set `VLLM_SAIL_STRICT_COMPAT=1` (used in CI) to fail closed
 with a `RuntimeError`.
 
-Commit-pinned installations match against the full 40-character source SHA.
-Leave `VLLM_VERSION` and `VLLM_VERSION_OVERRIDE` unset so the plugin can observe
-that identity. For release-tag manifests, `VLLM_VERSION` can state the actual
-release version when a source build reports an ambiguous SCM prefix.
+Commit-pinned installations match the full 40-character source SHA reported by
+the installed vLLM package. Release-tag manifests match the major and minor
+version. For those manifests, `VLLM_VERSION` can state the actual release version
+when a source build reports an ambiguous SCM prefix.
 
 ## Inspect the active environment
 
