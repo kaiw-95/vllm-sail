@@ -4,6 +4,7 @@ import itertools
 import json
 import os
 import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -193,7 +194,10 @@ def test_executor_separates_read_only_pr_execution_and_always_reporting():
     assert ppu["needs"] == "validate"
     assert ppu["uses"] == "./.github/workflows/ppu-build-and-test.yaml"
     assert ppu["permissions"] == {"contents": "read", "actions": "read"}
-    assert "secrets" not in ppu
+    assert ppu["secrets"] == {
+        "ci_registry_username": "${{ secrets.RELEASE_USERNAME }}",
+        "ci_registry_token": "${{ secrets.RELEASE_TOKEN }}",
+    }
     assert ppu["with"] == {
         "pr_head_sha": "${{ inputs.head_sha }}",
         "skip_ppu": "${{ needs.validate.outputs.skip_ppu == 'true' }}",
@@ -249,8 +253,27 @@ def test_untrusted_workflows_have_no_write_permissions_or_inherited_secrets(name
     config = workflow(name)
     assert config["cache-mode"] == "none"
     assert config["permissions"] == {"contents": "read", "actions": "read"}
-    for job in config["jobs"].values():
-        assert "secrets" not in job
+    for job_name, job in config["jobs"].items():
+        if job_name == "build" and name in {
+            "ppu-build-and-test.yaml",
+            "perf-regression.yaml",
+        }:
+            # Only the hosted container initializer receives the two named secrets.
+            assert job["uses"] == "./.github/workflows/_ppu-build.yaml"
+            secret_names = (
+                ("ci_registry_username", "ci_registry_token")
+                if name == "ppu-build-and-test.yaml"
+                else ("RELEASE_USERNAME", "RELEASE_TOKEN")
+            )
+            assert job["secrets"] == dict(
+                zip(
+                    ("ci_registry_username", "ci_registry_token"),
+                    ("${{ secrets." + secret + " }}" for secret in secret_names),
+                    strict=True,
+                )
+            )
+        else:
+            assert "secrets" not in job
         assert all(value != "write" for value in job.get("permissions", {}).values())
         for step in checkouts(job) if "steps" in job else []:
             assert step["with"]["persist-credentials"] is False
@@ -403,6 +426,9 @@ def test_pr_pipeline_structure():
     }
     runtime = jobs["runtime-image"]
     assert runtime["runs-on"] == "8-ppu-m890p"
+    assert runtime["timeout-minutes"] == (
+        "${{ github.event_name == 'pull_request' && 10 || 25 }}"
+    )
     assert "!inputs.skip_ppu" in runtime["if"]
     assert runtime["outputs"] == {
         "upstream_reuse": "${{ steps.reuse.outputs.supported }}",
@@ -413,7 +439,7 @@ def test_pr_pipeline_structure():
     resolve = next(
         step
         for step in runtime["steps"]
-        if step.get("name") == "Resolve the runner-configured CUDA-compatible runtime"
+        if step.get("name") == "Resolve the CUDA-compatible PPU runtime"
     )
     assert "ppu_runtime_image.sh" in resolve["run"]
     assert "PPU_CI_RUNTIME_IMAGE" not in resolve.get("env", {})
@@ -756,6 +782,12 @@ def test_build_leaf_preserves_retry_identity_and_image_output():
     }
     assert "if" not in build
     assert "needs" not in build
+    image_id = next(
+        step for step in build["steps"] if step.get("id") == "build-image-id"
+    )
+    assert image_id["env"] == {"CONTAINER_ID": "${{ job.container.id }}"}
+    assert image_id["continue-on-error"] is True
+    assert build["steps"].index(image_id) < build["steps"].index(checkouts(build)[0])
     caller = workflow("ppu-build-and-test.yaml")["jobs"]["build"]
     assert caller["uses"] == "./.github/workflows/_ppu-build.yaml"
     role = next(step for step in build["steps"] if step.get("id") == "donor-checkout")
@@ -777,8 +809,9 @@ def test_build_leaf_preserves_retry_identity_and_image_output():
         for step in build["steps"]
         if step.get("uses") == "actions/download-artifact@v4"
     ]
-    assert len(downloads) == 3
-    for slot, download in enumerate(downloads, 1):
+    assert len(downloads) == 4
+    for slot, download in zip((1, 2, 3, "upstream"), downloads, strict=True):
+        assert download["id"] == f"donor-{slot}"
         assert download["if"] == (
             f"steps.donors.outputs.run_{slot} != '' && steps.donors.outputs.artifact_{slot} != ''"
         )
@@ -796,11 +829,16 @@ def test_build_leaf_preserves_retry_identity_and_image_output():
         if step.get("name") == "Build or repackage wheels"
     )
     assert (
+        package["env"]["VLLM_SAIL_BUILD_IMAGE_ID"]
+        == "${{ steps.build-image-id.outputs.image_id }}"
+    )
+    assert (
         package["env"]["VLLM_SAIL_NATIVE_REUSE_ROOT"]
         == "${{ runner.temp }}/ppu-native-donors"
     )
-    for slot in range(1, 4):
-        assert package["env"][f"SOURCE_{slot}"] == (
+    assert downloads[-1]["name"] == "Download upstream vLLM wheel donor"
+    for slot in (1, 2, 3, "upstream"):
+        assert package["env"][f"SOURCE_{str(slot).upper()}"] == (
             f"${{{{ steps.donor-{slot}.outcome == 'success' && steps.donors.outputs.source_{slot} || '' }}}}"
         )
 
@@ -1275,9 +1313,21 @@ def expression(value, context):
     def contains_value(values, item):
         return item in values
 
+    def starts_with(text, prefix):
+        return (
+            ("" if text is None else str(text))
+            .lower()
+            .startswith(("" if prefix is None else str(prefix)).lower())
+        )
+
     return eval(
         value.strip(),
-        {"__builtins__": {}, "contains_value": contains_value, "format": str.format},
+        {
+            "__builtins__": {},
+            "contains_value": contains_value,
+            "format": str.format,
+            "startsWith": starts_with,
+        },
         {},
     )
 
@@ -1822,6 +1872,8 @@ def test_accuracy_nightly_routes_selected_models(
             expression(
                 jobs["notify-summary"]["if"],
                 {
+                    "github.repository": "vllm-project/vllm-sail",
+                    "github.ref": "refs/heads/main",
                     "github.event_name": event,
                     "inputs.models": models,
                     "needs.select.result": "failure",
@@ -1835,6 +1887,8 @@ def test_accuracy_nightly_routes_selected_models(
     values = dict(line.split("=", 1) for line in output.read_text().splitlines())
     legacy_matrix = values.get("matrix", "")
     context = {
+        "github.repository": "vllm-project/vllm-sail",
+        "github.ref": "refs/heads/main",
         "github.event_name": event,
         "vars.PPU_RECIPE_PUBLIC_ENABLED": str(recipe_enabled).lower(),
         "inputs.skip_wheel_build": False,
@@ -1942,11 +1996,252 @@ def test_accuracy_nightly_notification_when_selection_did_not_confirm_full_run(
 ):
     notify = workflow("ppu-accuracy-nightly.yaml")["jobs"]["notify-summary"]
     context = {
+        "github.repository": "vllm-project/vllm-sail",
+        "github.ref": "refs/heads/main",
         "github.event_name": event,
         "vars.PPU_NIGHTLY_SCHEDULE_DISABLED": disabled,
         "needs.select.result": selection,
     }
     assert bool(expression(notify["if"], context)) == expected
+
+
+@pytest.mark.parametrize(
+    ("repository", "ref", "event", "disabled", "selection", "full_run", "expected"),
+    [
+        (
+            "vllm-project/vllm-sail",
+            "refs/heads/main",
+            "workflow_dispatch",
+            "false",
+            "success",
+            "true",
+            True,
+        ),
+        (
+            "vllm-project/vllm-sail",
+            "refs/heads/releases/v0.34.0",
+            "workflow_dispatch",
+            "false",
+            "success",
+            "true",
+            True,
+        ),
+        (
+            "vllm-project/vllm-sail",
+            "refs/heads/releases/v0.35.0",
+            "workflow_dispatch",
+            "false",
+            "success",
+            "true",
+            True,
+        ),
+        (
+            "vllm-project/vllm-sail",
+            "refs/heads/ci/deepseek-v41-forward-perf",
+            "workflow_dispatch",
+            "false",
+            "success",
+            "true",
+            False,
+        ),
+        (
+            "vllm-project/vllm-sail",
+            "refs/heads/feat/test",
+            "workflow_dispatch",
+            "false",
+            "success",
+            "true",
+            False,
+        ),
+        (
+            "vllm-project/vllm-sail",
+            "refs/heads/releases-preview",
+            "workflow_dispatch",
+            "false",
+            "success",
+            "true",
+            False,
+        ),
+        (
+            "someone/vllm-sail",
+            "refs/heads/main",
+            "schedule",
+            "false",
+            "success",
+            "true",
+            False,
+        ),
+        (
+            "someone/vllm-sail",
+            "refs/heads/main",
+            "workflow_dispatch",
+            "false",
+            "success",
+            "true",
+            False,
+        ),
+        (
+            "vllm-project/vllm-sail",
+            "refs/tags/v1.0.0",
+            "workflow_dispatch",
+            "false",
+            "success",
+            "true",
+            False,
+        ),
+        (
+            "someone/vllm-sail",
+            "refs/heads/releases/v0.34.0",
+            "workflow_dispatch",
+            "false",
+            "success",
+            "true",
+            False,
+        ),
+    ],
+)
+def test_accuracy_nightly_notification_requires_official_repo_and_branch(
+    repository, ref, event, disabled, selection, full_run, expected
+):
+    notify = workflow("ppu-accuracy-nightly.yaml")["jobs"]["notify-summary"]
+    context = {
+        "github.repository": repository,
+        "github.ref": ref,
+        "github.event_name": event,
+        "vars.PPU_NIGHTLY_SCHEDULE_DISABLED": disabled,
+        "needs.select.result": selection,
+        "needs.select.outputs.full_run": full_run,
+    }
+    assert bool(expression(notify["if"], context)) == expected
+
+
+@pytest.mark.parametrize(
+    ("repository", "ref", "webhook", "targets_json", "expected"),
+    [
+        (
+            "vllm-project/vllm-sail",
+            "refs/heads/main",
+            "https://example.invalid",
+            "",
+            True,
+        ),
+        (
+            "vllm-project/vllm-sail",
+            "refs/heads/main",
+            "",
+            '{"default":{"webhook_url":"https://example.invalid"}}',
+            True,
+        ),
+        (
+            "vllm-project/vllm-sail",
+            "refs/heads/releases/v0.34.0",
+            "https://example.invalid",
+            "",
+            True,
+        ),
+        (
+            "vllm-project/vllm-sail",
+            "refs/heads/releases/v0.35.0",
+            "",
+            '{"routes":{"v0.35.0":{"webhook_url":"https://example.invalid"}}}',
+            True,
+        ),
+        (
+            "vllm-project/vllm-sail",
+            "refs/heads/Main",
+            "https://example.invalid",
+            "",
+            False,
+        ),
+        (
+            "vllm-project/vllm-sail",
+            "refs/heads/Main",
+            "",
+            '{"default":{"webhook_url":"https://example.invalid"}}',
+            False,
+        ),
+        (
+            "vllm-project/vllm-sail",
+            "refs/heads/Releases/candidate",
+            "https://example.invalid",
+            "",
+            False,
+        ),
+        (
+            "vllm-project/vllm-sail",
+            "refs/heads/releases/",
+            "https://example.invalid",
+            "",
+            False,
+        ),
+        (
+            "vllm-project/vllm-sail",
+            "refs/heads/ci/deepseek-v41-forward-perf",
+            "https://example.invalid",
+            "",
+            False,
+        ),
+        (
+            "vllm-project/vllm-sail",
+            "refs/tags/v1.0.0",
+            "https://example.invalid",
+            "",
+            False,
+        ),
+        (
+            "VLLM-PROJECT/vllm-sail",
+            "refs/heads/main",
+            "https://example.invalid",
+            "",
+            False,
+        ),
+        ("someone/vllm-sail", "refs/heads/main", "https://example.invalid", "", False),
+        ("vllm-project/vllm-sail", "refs/heads/main", "", "", False),
+    ],
+)
+def test_accuracy_nightly_notification_configured_step_enforces_exact_case(
+    tmp_path, repository, ref, webhook, targets_json, expected
+):
+    steps = workflow("ppu-accuracy-nightly.yaml")["jobs"]["notify-summary"]["steps"]
+    configured = next(step for step in steps if step.get("id") == "configured")
+    output = tmp_path / "github_output.txt"
+    result = subprocess.run(
+        ["bash", "-e", "-c", configured["run"]],
+        env={
+            **os.environ,
+            "GITHUB_REPOSITORY": repository,
+            "GITHUB_REF": ref,
+            "PPU_CI_NOTIFY_WEBHOOK_URL": webhook,
+            "PPU_CI_NOTIFY_TARGETS_JSON": targets_json,
+            "GITHUB_OUTPUT": str(output),
+        },
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result.returncode == 0
+    published = (
+        dict(line.split("=", 1) for line in output.read_text().splitlines())
+        if output.exists()
+        else {}
+    )
+    assert (published.get("enabled") == "true") is expected
+
+
+def test_accuracy_nightly_notification_passes_targets_json_secret():
+    steps = workflow("ppu-accuracy-nightly.yaml")["jobs"]["notify-summary"]["steps"]
+    configured = next(step for step in steps if step.get("id") == "configured")
+    send = next(
+        step for step in steps if step.get("name") == "Send one Markdown notification"
+    )
+    assert (
+        configured["env"]["PPU_CI_NOTIFY_TARGETS_JSON"]
+        == "${{ secrets.PPU_CI_NOTIFY_TARGETS_JSON }}"
+    )
+    assert (
+        send["env"]["PPU_CI_NOTIFY_TARGETS_JSON"]
+        == "${{ secrets.PPU_CI_NOTIFY_TARGETS_JSON }}"
+    )
 
 
 @pytest.mark.parametrize("models", ["", " \t"])
@@ -2085,6 +2380,8 @@ def test_accuracy_nightly_devops_dispatch_dual_mode_and_cron_switch(tmp_path, mo
     assert values["full_run"] == "true"
     assert len(values["target_sha"]) == 40
     prebuilt_ctx = {
+        "github.repository": "vllm-project/vllm-sail",
+        "github.ref": "refs/heads/main",
         "github.event_name": "workflow_dispatch",
         "vars.PPU_RECIPE_PUBLIC_ENABLED": "true",
         "inputs.skip_wheel_build": True,
@@ -2208,7 +2505,7 @@ def test_accuracy_nightly_hardening_target_trust_digest_pin_and_cron_concurrency
     resolve_step = next(
         s
         for s in runtime_steps
-        if s.get("name") == "Resolve the runner-configured CUDA-compatible runtime"
+        if s.get("name") == "Resolve the CUDA-compatible PPU runtime"
     )
     assert resolve_step["env"] == {
         "TRUSTED_DIR": "${{ steps.workspace.outputs.trusted }}",
@@ -2342,6 +2639,46 @@ def test_accuracy_nightly_hardening_target_trust_digest_pin_and_cron_concurrency
         }
         assert expression(wf["env"]["NIGHTLY_VERSION"], override_ctx) == version
         assert expression(group_expr, override_ctx) == f"accuracy-nightly-{version}"
+    dev_ctx = {
+        "github.event_name": "workflow_dispatch",
+        "github.ref_type": "branch",
+        "github.ref": "refs/heads/ci/deepseek-v41-forward-perf",
+        "github.ref_name": "ci/deepseek-v41-forward-perf",
+        "inputs.target_ref": "",
+        "vars.PPU_NIGHTLY_SCHEDULE_DISABLED": "",
+    }
+    assert (
+        expression(group_expr, dev_ctx)
+        == "accuracy-nightly-dev-ci/deepseek-v41-forward-perf"
+    )
+    branch_same_name_ctx = {
+        "github.event_name": "workflow_dispatch",
+        "github.ref_type": "branch",
+        "github.ref": "refs/heads/v1.0.0",
+        "github.ref_name": "v1.0.0",
+        "inputs.target_ref": "",
+        "vars.PPU_NIGHTLY_SCHEDULE_DISABLED": "",
+    }
+    assert expression(group_expr, branch_same_name_ctx) == "accuracy-nightly-dev-v1.0.0"
+    tag_ctx = {
+        "github.event_name": "workflow_dispatch",
+        "github.ref_type": "tag",
+        "github.ref": "refs/tags/v1.0.0",
+        "github.ref_name": "v1.0.0",
+        "inputs.target_ref": "",
+        "vars.PPU_NIGHTLY_SCHEDULE_DISABLED": "",
+    }
+    assert expression(group_expr, tag_ctx) == "accuracy-nightly-main"
+    assert (
+        expression(group_expr, {**tag_ctx, "inputs.target_ref": "releases/v0.34.0"})
+        == "accuracy-nightly-v0.34.0"
+    )
+    for target, expected_group in (
+        ("releases/v0.34.0", "accuracy-nightly-v0.34.0"),
+        ("main", "accuracy-nightly-main"),
+    ):
+        dev_override_ctx = {**dev_ctx, "inputs.target_ref": target}
+        assert expression(group_expr, dev_override_ctx) == expected_group
     assert dispatch["permissions"] == {"actions": "write"}
     assert "--ref releases/v0.34.0" in dispatch["steps"][0]["run"]
     for consumer in ("build", "accuracy", "recipe-model-sanity"):
@@ -3284,7 +3621,8 @@ def test_upstream_reuse_script_protects_image_and_wheel_imports_and_is_fail_clos
     assert 'ppu_image_stack.py" capture' in text
     assert 'ppu_image_stack.py" verify' in text
     assert "trap cleanup EXIT" in text
-    assert "requirements/upstream-reuse.txt" in text
+    assert "ppu_ci_install_wheel_dependency transformers '' --no-cache-dir" in text
+    assert "'numba>=0.65'" in text
     assert "requirements/dev.txt" not in text
     assert "current_platform.is_ppu()" in text
     assert "export VLLM_PLUGINS=ppu" in text
@@ -3746,3 +4084,165 @@ def test_ppu_gate_avoids_hosted_runner_queue_except_when_skip_ppu_is_set(build_j
     assert expression(gate_runs_on, {"inputs.skip_ppu": False}) == "8-ppu-m890p"
     assert expression(gate_runs_on, {}) == "8-ppu-m890p"
     assert expression(gate_runs_on, {"inputs.skip_ppu": True}) == "ubuntu-latest"
+
+
+def test_recipe_validate_workflow_runs_guardrails_and_command_diff(tmp_path):
+    cfg = workflow("recipe-validate.yaml")
+    assert cfg["permissions"] == {"contents": "read"}
+    pr_trigger = cfg[True]["pull_request"]
+    assert pr_trigger["branches"] == ["main", "releases/**"]
+    assert "tests/ppu/**" in pr_trigger["paths"]
+    assert "tests/e2e/models/**" in pr_trigger["paths"]
+    assert "scripts/ci/ppu_e2e_models.json" in pr_trigger["paths"]
+    assert "scripts/ci/ppu_recipe.py" in pr_trigger["paths"]
+
+    def _matches_actions_glob(rel_path: str, pattern: str) -> bool:
+        escaped = re.escape(pattern)
+        regex_str = (
+            escaped.replace(r"\*\*/", "(?:.*/)?")
+            .replace(r"\*\*", ".*")
+            .replace(r"\*", "[^/]*")
+            .replace(r"\?", "[^/]")
+        )
+        return re.fullmatch(regex_str, rel_path) is not None
+
+    def _matches_pr_paths(rel_path: str) -> bool:
+        return any(_matches_actions_glob(rel_path, pat) for pat in pr_trigger["paths"])
+
+    for should_match in (
+        "configs/copied-model.yaml",
+        "configs/copied-model.yml",
+        "copied-model.yaml",
+        ".github/workflows/recipe-validate.yaml",
+        "tests/ppu/recipes/Qwen/Qwen3.8-27B.yaml",
+        "tests/e2e/models/test_dummy.py",
+        "scripts/ci/ppu_recipe.py",
+    ):
+        assert _matches_pr_paths(should_match), should_match
+    for should_skip in ("README.md", "vllm_sail/platform.py"):
+        assert not _matches_pr_paths(should_skip), should_skip
+
+    job = cfg["jobs"]["validate"]
+    assert job["runs-on"] == "ubuntu-latest"
+    checkout = checkouts(job)[0]
+    assert checkout["with"]["fetch-depth"] == 0
+    assert checkout["with"]["persist-credentials"] is False
+
+    step = next(s for s in job["steps"] if "ppu_recipe.py diff" in s.get("run", ""))
+    assert "ppu_recipe.py validate --all --vllm-parser skip" in step["run"]
+    assert "ppu_recipe.py render-matrix --check" in step["run"]
+    assert "--only-when-changed" in step["run"]
+    assert "--include-signoff-hint" in step["run"]
+    assert "$GITHUB_STEP_SUMMARY" in step["run"]
+    assert "Model Recipe Sign-off Checklist" in step["run"]
+
+    # Smoke-execute the workflow step shell block against a synthetic git repo with legacy-only change.
+    repo = tmp_path / "repo"
+    (repo / "scripts/ci").mkdir(parents=True)
+    (repo / "tests/e2e/models").mkdir(parents=True)
+    shutil.copytree(ROOT / "tests/ppu", repo / "tests/ppu")
+    shutil.copy2(ROOT / "scripts/ci/ppu_recipe.py", repo / "scripts/ci/ppu_recipe.py")
+    shutil.copy2(
+        ROOT / "scripts/ci/ppu_e2e_select.py", repo / "scripts/ci/ppu_e2e_select.py"
+    )
+    shutil.copy2(
+        ROOT / "scripts/ci/ppu_e2e_models.json",
+        repo / "scripts/ci/ppu_e2e_models.json",
+    )
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"], cwd=repo, check=True
+    )
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-q", "--no-verify", "-m", "base"], cwd=repo, check=True
+    )
+    base_sha = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=repo, text=True
+    ).strip()
+
+    (repo / "tests/e2e/models/test_dummy.py").write_text("# changed\n")
+    subprocess.run(
+        ["git", "add", "tests/e2e/models/test_dummy.py"], cwd=repo, check=True
+    )
+    subprocess.run(
+        ["git", "commit", "-q", "--no-verify", "-m", "legacy change"],
+        cwd=repo,
+        check=True,
+    )
+
+    summary_file = tmp_path / "summary.md"
+    res = subprocess.run(
+        ["bash", "-euo", "pipefail", "-c", step["run"]],
+        cwd=repo,
+        env={
+            **os.environ,
+            "BASE_SHA": base_sha,
+            "GITHUB_STEP_SUMMARY": str(summary_file),
+            "PATH": f"{Path(sys.executable).parent}:{os.environ['PATH']}",
+        },
+        capture_output=True,
+        text=True,
+    )
+    assert res.returncode == 0, res.stderr
+    assert "::notice title=Model Recipe Sign-off Checklist::" in res.stdout
+    assert "Model Recipe Sign-off Reminder" in summary_file.read_text()
+
+    # Positive control: ordinary non-recipe YAML under configs/ passes with empty summary.
+    ordinary_base = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=repo, text=True
+    ).strip()
+    (repo / "configs").mkdir(parents=True, exist_ok=True)
+    (repo / "configs/ordinary.yaml").write_text("kind: ordinary_config\n")
+    subprocess.run(["git", "add", "configs/ordinary.yaml"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-q", "--no-verify", "-m", "ordinary yaml"],
+        cwd=repo,
+        check=True,
+    )
+    ordinary_summary = tmp_path / "ordinary-summary.md"
+    ordinary_res = subprocess.run(
+        ["bash", "-euo", "pipefail", "-c", step["run"]],
+        cwd=repo,
+        env={
+            **os.environ,
+            "BASE_SHA": ordinary_base,
+            "GITHUB_STEP_SUMMARY": str(ordinary_summary),
+            "PATH": f"{Path(sys.executable).parent}:{os.environ['PATH']}",
+        },
+        capture_output=True,
+        text=True,
+    )
+    assert ordinary_res.returncode == 0, ordinary_res.stderr
+    assert ordinary_summary.read_text() == ""
+
+    # Counterexample: stray ppu-serving/v1 YAML copied under configs/ fails the workflow step.
+    shutil.copy2(
+        repo / "tests/ppu/recipes/Qwen/Qwen3.8-27B.yaml",
+        repo / "configs/copied-model.yaml",
+    )
+    subprocess.run(["git", "add", "configs/copied-model.yaml"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-q", "--no-verify", "-m", "stray copied recipe"],
+        cwd=repo,
+        check=True,
+    )
+    stray_summary = tmp_path / "stray-summary.md"
+    stray_res = subprocess.run(
+        ["bash", "-euo", "pipefail", "-c", step["run"]],
+        cwd=repo,
+        env={
+            **os.environ,
+            "BASE_SHA": ordinary_base,
+            "GITHUB_STEP_SUMMARY": str(stray_summary),
+            "PATH": f"{Path(sys.executable).parent}:{os.environ['PATH']}",
+        },
+        capture_output=True,
+        text=True,
+    )
+    assert stray_res.returncode != 0
+    assert (
+        "stray 'ppu-serving/v1' recipe file(s) outside tests/ppu/recipes/*.yaml: "
+        "configs/copied-model.yaml"
+    ) in (stray_res.stdout + stray_res.stderr)

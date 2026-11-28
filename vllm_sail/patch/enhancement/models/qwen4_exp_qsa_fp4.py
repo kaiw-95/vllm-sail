@@ -41,6 +41,7 @@ path: that is a misconfigured wheel, not an unsupported chip.
 from __future__ import annotations
 
 import torch
+from vllm.config import get_current_vllm_config
 from vllm.models.qwen4_exp.common.qsa_indexer import _QSAIndexerCache
 from vllm.models.qwen4_exp.nvidia.ops import qsa_indexer as _qsa_indexer_ops
 from vllm.models.qwen4_exp.nvidia.ops import qsa_prepare as _qsa_prepare_ops
@@ -74,7 +75,6 @@ _upstream_select_paged_decode = _qsa_indexer_ops.qsa_select_paged_decode
 _upstream_select_paged_prefill = _qsa_indexer_ops.qsa_select_paged_prefill
 _upstream_warmup_paged_decode = _qsa_indexer_ops.warmup_qsa_mqa_paged_decode
 
-_AFFECTED = ">=0.32.0,<0.33.0"
 
 _FP8_REJECTED = (
     "On ZW-M890P the Qwen4Exp QSA indexer stores its compressed key cache as "
@@ -94,7 +94,6 @@ _FP8_REJECTED = (
         "already validates against self.dtype and self.head_size, so setting "
         "them here is enough to bind a [blocks, rows, 1, 68] uint8 cache."
     ),
-    affected_versions=_AFFECTED,
     remove_when=(
         "upstream QSACompressedKeyCache accepts a packed sub-byte row width "
         "(an MXFP4/UE8M0 entry in its indexer_kv_dtype resolution), so the "
@@ -150,7 +149,6 @@ def __init__(
         "upstream declares no constraint for this backend and inherits "
         "MultipleOf(1)."
     ),
-    affected_versions=_AFFECTED,
     remove_when=(
         "upstream's FP4-capable indexer backends declare their page-derived "
         "kernel block size through get_supported_kernel_block_sizes."
@@ -165,12 +163,19 @@ def get_supported_kernel_block_sizes(
 ) -> list[int | MultipleOf]:
     if not is_ppu_15():
         return [MultipleOf(1)]
-    if not isinstance(kv_cache_spec, MLAAttentionSpec):
+    if kv_cache_spec is not None and not isinstance(kv_cache_spec, MLAAttentionSpec):
         # The raw key ring is bf16 and never reaches an FP4 kernel.
         return [MultipleOf(1)]
-    return [
-        MultipleOf(MXFP4_PAGE_ROWS_GRANULARITY * int(kv_cache_spec.tokens_per_state))
-    ]
+    if kv_cache_spec is not None:
+        tokens_per_state = int(kv_cache_spec.tokens_per_state)
+    else:
+        # The platform's hybrid mamba alignment queries before any spec exists.
+        # Answering MultipleOf(1) there hides the FP4 page contract, so it picks
+        # a block (e.g. 832) that select_common_block_size later rejects.
+        tokens_per_state = int(
+            get_current_vllm_config().model_config.hf_text_config.indexer_compress_ratio
+        )
+    return [MultipleOf(MXFP4_PAGE_ROWS_GRANULARITY * tokens_per_state)]
 
 
 @patch(
@@ -182,7 +187,6 @@ def get_supported_kernel_block_sizes(
         "a page's packed values, then all of its UE8M0 scales). The plugin copy "
         "packs MXFP4 at the store and is otherwise verbatim."
     ),
-    affected_versions=_AFFECTED,
     remove_when=(
         "upstream's _qsa_prepare_kernel takes the compressed cache's packed row "
         "geometry as a parameter, so a planar MXFP4 store needs no copied body."
@@ -195,7 +199,6 @@ def get_supported_kernel_block_sizes(
         "Rebind the alias QSAIndexer imported at module scope, so the indexer "
         "calls the MXFP4-aware prepare instead of the upstream one."
     ),
-    affected_versions=_AFFECTED,
     remove_when=(
         "upstream's _qsa_prepare_kernel takes the compressed cache's packed row "
         "geometry as a parameter, so a planar MXFP4 store needs no copied body."
@@ -215,7 +218,6 @@ def qsa_prepare(*args, **kwargs):
         "logits kernel instead of upstream's Triton uniform-decode kernel, which "
         "cannot read packed FP4 rows."
     ),
-    affected_versions=_AFFECTED,
     remove_when=(
         "upstream's qsa_select_paged_decode dispatches on the compressed cache "
         "dtype, so a packed FP4 cache reaches an FP4 scorer without a patch."
@@ -236,7 +238,6 @@ def qsa_select_paged_decode(*args, **kwargs):
         "max_seqlen_k, which bounds the transient logits by the longest context "
         "instead of by the whole packed key space."
     ),
-    affected_versions=_AFFECTED,
     remove_when=(
         "upstream's qsa_select_paged_prefill dispatches on the compressed cache "
         "dtype, so a packed FP4 cache reaches an FP4 scorer without a patch."
@@ -257,7 +258,6 @@ def qsa_select_paged_prefill(*args, **kwargs):
         "CUDA graph capture cannot tolerate, so warm the FP4 paged, non-paged "
         "and MXFP4 packing kernels for every capturable decode query length."
     ),
-    affected_versions=_AFFECTED,
     remove_when=(
         "upstream's QSA warmup dispatches on the compressed cache dtype, so an "
         "FP4 cache warms its own kernels without a patch."

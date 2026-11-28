@@ -19,7 +19,7 @@ which then replaces upstream's on every platform.
 
 On PPU, ``select_regions`` also resolves ``auto`` / ``deep_select`` like
 upstream does on SM100: the SAIL DeepSelect wheel runs when it applies
-(``vllm_sail.utils.deep_select.can_use_deep_select``: SM 8.9, BF16,
+(``vllm_sail.utils.deep_select.can_use_deep_select``: SM 8.9, BF16/FP32,
 ``VLLM_SAIL_USE_DEEPSELECT``); otherwise an explicit ``deep_select`` falls back
 to ``per_row`` (topKPerRowDecode) before upstream picks the sort and stride,
 and ``auto`` keeps upstream's ``per_row``.
@@ -38,7 +38,6 @@ from vllm_sail.patch.utils import patch
 from vllm_sail.utils import deep_select
 
 _TARGET = "vllm.models.step5.nvidia.flashinfer_sparse"
-_AFFECTED = ">=0.32.0,<0.33.0"
 _REASON_SCORES = (
     "Step5's sparse adapter imports flashinfer.attn_scores for its indexer "
     "scorer and schedule; the PPU FlashInfer build has no such module. PPU "
@@ -66,7 +65,6 @@ _upstream_select_regions = Step5FlashInferSparse.select_regions
         "Triton DSA kernels use native E4M3 on SM 8.9 and the software E4M3 "
         "of step5_soft_fp8 on SM 8.0."
     ),
-    affected_versions=_AFFECTED,
     remove_when=(
         "Step5DSAAttentionBackend admits SM 8.x or defers to platform "
         "capability checks."
@@ -191,7 +189,6 @@ def _use_triton_scorer() -> bool:
     _TARGET,
     "Step5FlashInferSparse.__init__",
     reason=_REASON_SCORES,
-    affected_versions=_AFFECTED,
     remove_when=_REMOVE_WHEN,
 )
 def _init(self, device):
@@ -208,7 +205,6 @@ def _init(self, device):
     _TARGET,
     "Step5FlashInferSparse.warmup_prefill_scoring",
     reason=_REASON_SCORES,
-    affected_versions=_AFFECTED,
     remove_when=_REMOVE_WHEN,
 )
 def _warmup_prefill_scoring(self, max_regions, topk, paired_heads, device):
@@ -223,7 +219,6 @@ def _warmup_prefill_scoring(self, max_regions, topk, paired_heads, device):
     _TARGET,
     "Step5FlashInferSparse.prefill_pair_inputs",
     reason=_REASON_SCORES,
-    affected_versions=_AFFECTED,
     remove_when=_REMOVE_WHEN,
 )
 def _prefill_pair_inputs(self, indexer):
@@ -238,17 +233,16 @@ def _prefill_pair_inputs(self, indexer):
     reason=(
         "Step5 resolves auto to deep_select only on the SM100 family and an "
         "explicit deep_select raises elsewhere; PPU selects the deep_select "
-        "wheel (SM 8.9, BF16) when it applies and per_row topKPerRowDecode "
+        "wheel (SM 8.9, BF16/FP32) when it applies and per_row topKPerRowDecode "
         "otherwise."
     ),
-    affected_versions=_AFFECTED,
     remove_when=(
         "Step5 resolves its region top-k backend through platform "
         "capabilities that PPU can provide."
     ),
 )
 def _select_regions(
-    self, scores, current, topk, *, topk_lengths=None, paged_prefill=None, sort=True
+    self, scores, current, topk, *, topk_lengths=None, paged_prefill=None, sort=True, out=None, history_only=False
 ):
     if not current_platform.is_ppu():
         return _upstream_select_regions(
@@ -258,14 +252,14 @@ def _select_regions(
             topk,
             topk_lengths=topk_lengths,
             paged_prefill=paged_prefill,
-            sort=sort,
+            sort=sort, out=out, history_only=history_only,
         )
     backend = self._topk_backend
     if scores.shape[1] > topk and backend in ("auto", "deep_select"):
         if deep_select.can_use_deep_select(scores, topk):
             backend = "deep_select"
         elif backend == "deep_select":
-            # Step5 scores are FP32, which the BF16 wheel never rounds.
+            # Fall back without rounding when the wheel, device or shape does not apply.
             deep_select.warn_deep_select_fallback()
             backend = "per_row"
             # topKPerRowDecode reads FP32 only; the upcast keeps the order.
@@ -279,5 +273,5 @@ def _select_regions(
         backend,
         topk_lengths=topk_lengths,
         paged_prefill=paged_prefill,
-        sort=sort,
+        sort=sort, out=out, history_only=history_only,
     )

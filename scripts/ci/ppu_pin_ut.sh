@@ -4,6 +4,8 @@
 set -Eeuo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+# shellcheck source=scripts/ci/ppu_ci_deps.sh
+source "${ROOT_DIR}/scripts/ci/ppu_ci_deps.sh"
 WHEELS_DIR="${WHEELS_DIR:?WHEELS_DIR is required}"
 UT_RESULTS_DIR="${UT_RESULTS_DIR:?UT_RESULTS_DIR is required}"
 mkdir -p "${UT_RESULTS_DIR}"
@@ -36,11 +38,10 @@ export PIP_CONSTRAINT="${UT_RESULTS_DIR}/image-constraints.txt"
 python "${ROOT_DIR}/scripts/ci/ppu_image_stack.py" capture \
     --sdk /usr/local/PPU_SDK --output "${UT_RESULTS_DIR}/image-stack.json" \
     --constraints "${PIP_CONSTRAINT}"
-python -m pip install --no-deps --force-reinstall \
+python -m pip install --no-index --no-deps --force-reinstall \
     "${WHEELS_DIR}"/vllm/*.whl "${WHEELS_DIR}"/vllm-sail/*.whl
 PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/ \
-    python -m pip install -r "${ROOT_DIR}/requirements/dev.txt" \
-    -r "${ROOT_DIR}/requirements/profiling.txt"
+    ppu_ci_install_wheel_dependency nvtx profiling -r "${ROOT_DIR}/requirements/dev.txt"
 python "${ROOT_DIR}/scripts/ci/ppu_image_stack.py" verify \
     --sdk /usr/local/PPU_SDK --output "${UT_RESULTS_DIR}/image-stack.json"
 
@@ -50,10 +51,12 @@ python - <<'PY'
 import torch
 import vllm
 import vllm_sail
+# Platform discovery can succeed even if the wheel has unresolved native symbols.
+import vllm_sail._upstream_C
 from vllm.platforms import current_platform
 from vllm_sail.compat import check_vllm_compatibility
 
-check_vllm_compatibility(force=True)
+check_vllm_compatibility(force=True, strict=True)
 assert current_platform.is_ppu(), current_platform
 assert torch.cuda.is_available(), "the pin UT pod requires a PPU driver/device"
 print("SAIL PyTorch:", torch.__version__, torch.__file__)
