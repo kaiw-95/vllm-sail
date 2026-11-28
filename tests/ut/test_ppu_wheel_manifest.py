@@ -41,7 +41,7 @@ def make_wheels(
                         "vllm/_rust_tool_parser.abi3.so", b"test extension"
                     )
             elif name == "vllm_sail":
-                for module in ("_C", "_moe_C", "_upstream_C", "_upstream_moe_C"):
+                for module in manifest.NATIVE_MODULES:
                     archive.writestr(f"vllm_sail/{module}.abi3.so", b"test extension")
     return next(directory.rglob("vllm-*.whl"))
 
@@ -129,6 +129,31 @@ def test_rejects_changed_wheel_bytes(tmp_path: Path) -> None:
         archive.writestr("vllm/changed.py", "# substituted wheel\n")
     with pytest.raises(ValueError, match="differ from build manifest"):
         manifest.verify(tmp_path)
+
+
+def test_vllm_fingerprint_tracks_upstream_build_inputs(tmp_path: Path) -> None:
+    source = make_native_source(tmp_path)
+    commit = "1" * 40
+    image = f"sdk@sha256:{'a' * 64}"
+    original = manifest.vllm_build_fingerprint(source, commit=commit, image=image)
+    (source / "csrc/fixture.hg").write_text("changed SAIL kernel\n")
+    assert (
+        manifest.vllm_build_fingerprint(source, commit=commit, image=image) == original
+    )
+    assert (
+        manifest.vllm_build_fingerprint(source, commit="2" * 40, image=image)
+        != original
+    )
+    assert (
+        manifest.vllm_build_fingerprint(
+            source, commit=commit, image=f"sdk@sha256:{'b' * 64}"
+        )
+        != original
+    )
+    (source / "requirements/build.txt").write_text("changed build requirements\n")
+    assert (
+        manifest.vllm_build_fingerprint(source, commit=commit, image=image) != original
+    )
 
 
 def test_rejects_manifest_version_override(tmp_path: Path) -> None:

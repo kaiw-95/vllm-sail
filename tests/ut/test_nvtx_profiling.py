@@ -19,6 +19,7 @@ import importlib.util
 import logging
 import sys
 import types
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -39,11 +40,6 @@ PROFILING_TARGETS = (
     "vllm.v1.engine.core.EngineCore.__init__",
     "vllm.v1.engine.core.EngineCore.step",
     "vllm.v1.engine.core.EngineCore.step_with_batch_queue",
-    "vllm.v1.worker.gpu_model_runner.GPUModelRunner.__init__",
-    "vllm.v1.worker.gpu_model_runner.GPUModelRunner._prepare_inputs",
-    "vllm.v1.worker.gpu_model_runner.GPUModelRunner._sample",
-    "vllm.v1.worker.gpu_model_runner.GPUModelRunner._model_forward",
-    "vllm.v1.worker.gpu_model_runner.GPUModelRunner.execute_model",
     "vllm.v1.worker.gpu.model_runner.GPUModelRunner.prepare_inputs",
     "vllm.v1.worker.gpu.model_runner.GPUModelRunner.sample",
     "vllm.v1.worker.gpu.model_runner.GPUModelRunner.execute_model",
@@ -263,20 +259,21 @@ def profiling_pkg(fake_vllm: SimpleNamespace, monkeypatch: pytest.MonkeyPatch):
     return module
 
 
-@pytest.fixture(params=[False, True], ids=["plain", "dp-scope-first"])
-def installed(
+@contextmanager
+def _install_profiling(
     profiling_pkg,
     nvtx_stub: dict[str, list],
     monkeypatch: pytest.MonkeyPatch,
     fake_vllm: SimpleNamespace,
-    request: pytest.FixtureRequest,
+    *,
+    dp_scope_first: bool,
 ):
     """Run install() with the gate on and return the faked targets."""
     monkeypatch.setenv("VLLM_PPU_NVTX_PROFILE", "1")
     saved_registry = PATCH_REGISTRY[:]
     PATCH_REGISTRY.clear()
     try:
-        if request.param:
+        if dp_scope_first:
             from vllm_sail.patch.bugfix import dp_idle_mtp_dummy_batch
 
             dp_idle_mtp_dummy_batch._install_execute_model_scope()
@@ -293,6 +290,23 @@ def installed(
         )
     finally:
         PATCH_REGISTRY[:] = saved_registry
+
+
+@pytest.fixture(params=[False, True], ids=["plain", "dp-scope-first"])
+def installed(profiling_pkg, nvtx_stub, monkeypatch, fake_vllm, request):
+    with _install_profiling(
+        profiling_pkg, nvtx_stub, monkeypatch, fake_vllm, dp_scope_first=request.param
+    ) as targets:
+        yield targets
+
+
+@pytest.fixture
+def installed_with_dp_scope(profiling_pkg, nvtx_stub, monkeypatch, fake_vllm):
+    # Use a separate fixture instead of overriding the parametrized fixture.
+    with _install_profiling(
+        profiling_pkg, nvtx_stub, monkeypatch, fake_vllm, dp_scope_first=True
+    ) as targets:
+        yield targets
 
 
 def _records_for(targets) -> dict[str, Any]:
@@ -327,11 +341,6 @@ def test_gate_on_installs_every_patch(installed) -> None:
 
     fakes = installed.fakes
     replacements = {
-        "vllm.v1.worker.gpu_model_runner.GPUModelRunner.__init__": fakes.GPUModelRunner.__init__,
-        "vllm.v1.worker.gpu_model_runner.GPUModelRunner._prepare_inputs": fakes.GPUModelRunner._prepare_inputs,
-        "vllm.v1.worker.gpu_model_runner.GPUModelRunner._sample": fakes.GPUModelRunner._sample,
-        "vllm.v1.worker.gpu_model_runner.GPUModelRunner._model_forward": fakes.GPUModelRunner._model_forward,
-        "vllm.v1.worker.gpu_model_runner.GPUModelRunner.execute_model": fakes.GPUModelRunner.execute_model,
         "vllm.v1.worker.gpu.model_runner.GPUModelRunner.prepare_inputs": (
             fakes.GPUModelRunnerV2.prepare_inputs
         ),
@@ -423,7 +432,7 @@ def test_drifted_target_degrades_to_warning(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     monkeypatch.setenv("VLLM_PPU_NVTX_PROFILE", "1")
-    monkeypatch.delitem(sys.modules, "vllm.v1.worker.gpu_model_runner")
+    monkeypatch.delitem(sys.modules, "vllm.v1.worker.gpu.model_runner")
     with caplog.at_level(logging.WARNING):
         profiling_pkg.install()
     assert profiling_pkg._installed is False
@@ -435,8 +444,7 @@ def test_drifted_target_degrades_to_warning(
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture
-def recording_nvtx(installed, monkeypatch: pytest.MonkeyPatch):
+def _record_nvtx(monkeypatch: pytest.MonkeyPatch):
     """Swap the helper backends for recorders after install imported them."""
     prof_nvtx = importlib.import_module("vllm_sail.profiling.nvtx")
     pushes: list[str] = []
@@ -450,71 +458,9 @@ def recording_nvtx(installed, monkeypatch: pytest.MonkeyPatch):
     return SimpleNamespace(pushes=pushes, pops=pops, iters=iters)
 
 
-def test_execute_model_wraps_iteration_range(installed, recording_nvtx) -> None:
-    runner = installed.fakes.GPUModelRunner()
-    assert runner.iteration == 0
-
-    output = _sched_output()
-    result = runner.execute_model(output)
-
-    assert result == ("execute_model", output, None)
-    assert recording_nvtx.pushes == ["[prof_range]: iter 0"]
-    assert len(recording_nvtx.pops) == 1
-    assert recording_nvtx.iters == [0]
-    assert runner.iteration == 1
-    assert "total_tokens=5,req_id:num_tokens={'r1': 5}" in installed.nvtx_calls["marks"]
-
-    runner.execute_model(output)
-    assert recording_nvtx.pushes[1] == "[prof_range]: iter 1"
-
-
-def test_sample_wraps_sampler_range(installed, recording_nvtx) -> None:
-    runner = installed.fakes.GPUModelRunner()
-    logits = SimpleNamespace(shape=(4, 8))
-
-    result = runner._sample(logits, None)
-
-    assert result == ("sample", logits, None)
-    assert recording_nvtx.pushes == ["[FW_NATIVE] op:sampler,logits:(4, 8)"]
-    assert len(recording_nvtx.pops) == 1
-
-    runner._sample(None, "spec")
-    assert recording_nvtx.pushes[1] == "[FW_NATIVE] op:sampler,logits:None"
-
-
-def test_model_forward_range_uses_stashed_scheduler_output(
-    installed, recording_nvtx
-) -> None:
-    runner = installed.fakes.GPUModelRunner()
-
-    assert runner._model_forward(input_ids=1) == ("forward", (), {"input_ids": 1})
-    assert recording_nvtx.pushes == []
-
-    runner._ppu_nvtx_prof_scheduler_output = _sched_output(
-        num_scheduled_tokens={"r1": 3, "r2": 1},
-        scheduled_spec_decode_tokens={"r1": [10]},
-    )
-    runner._model_forward(input_ids=2)
-    assert recording_nvtx.pushes == ["total bs=2, P bs=1"]
-    assert len(recording_nvtx.pops) == 1
-
-    # execute_model clears the stash, so later forwards are uninstrumented.
-    runner.execute_model(_sched_output())
-    assert recording_nvtx.pushes[-1] == "[prof_range]: iter 0"
-    count = len(recording_nvtx.pushes)
-    runner._model_forward(input_ids=3)
-    assert len(recording_nvtx.pushes) == count
-
-
-def test_prepare_inputs_is_annotated(installed) -> None:
-    runner = installed.fakes.GPUModelRunner()
-    assert runner._prepare_inputs("so", "nst") == ("prepare_inputs", "so", "nst")
-    assert "prepare_inputs" in installed.nvtx_calls["annotated"]
-
-
-# ---------------------------------------------------------------------------
-# Model Runner V2 (the 0.31 default) carries the same ranges
-# ---------------------------------------------------------------------------
+@pytest.fixture
+def recording_nvtx(installed, monkeypatch: pytest.MonkeyPatch):
+    return _record_nvtx(monkeypatch)
 
 
 def test_v2_execute_model_wraps_iteration_range(installed, recording_nvtx) -> None:
@@ -556,15 +502,15 @@ def test_v2_execute_model_forwards_dummy_runs_unprofiled(
     assert not hasattr(runner, "iteration")
 
 
-@pytest.mark.parametrize("installed", [True], indirect=True, ids=["dp-scope-first"])
 @pytest.mark.parametrize("dummy_run", [False, True])
 @pytest.mark.parametrize("raises", [False, True])
 def test_v2_profiling_preserves_dp_scope(
-    installed, recording_nvtx, dummy_run, raises
+    installed_with_dp_scope, monkeypatch, dummy_run, raises
 ) -> None:
     from vllm_sail.patch.bugfix import dp_idle_mtp_dummy_batch as dp
 
-    runner = installed.fakes.GPUModelRunnerV2()
+    recording_nvtx = _record_nvtx(monkeypatch)
+    runner = installed_with_dp_scope.fakes.GPUModelRunnerV2()
 
     def execute():
         assert dp._get_uniform_token_count() is None
@@ -814,7 +760,7 @@ def test_real_engine_steps_keep_aborts_after_wait_and_close_ranges(
     queued,
     outcome,
 ):
-    """执行完整真实 step；仅在 executor、scheduler 和诊断边界替身。"""
+    """Execute full real step with boundary doubles only for executor, scheduler, and diagnostics."""
     from collections import deque
     from concurrent.futures import Future
     from contextlib import contextmanager
@@ -833,10 +779,14 @@ def test_real_engine_steps_keep_aborts_after_wait_and_close_ranges(
     monkeypatch.setattr(tracing, "_torch_range_push", pushes.append)
     monkeypatch.setattr(tracing, "_torch_range_pop", lambda: pops.append(1))
     core = fake_vllm.EngineCore()
+    core.num_executed_steps = 0
+    core.deferred_step = None
     output, model_output, details, grammar = object(), object(), object(), object()
     scheduled = _sched_output()
     deferred = queued and outcome == "sample"
-    next_scheduled = _sched_output(pending_structured_output_tokens=True)
+    next_scheduled = _sched_output(
+        pending_structured_output_tokens=True, has_structured_output_spec_decode=True
+    )
     drafts = object()
     sampled_future = Future()
     sampled_future.set_result(model_output)
@@ -913,7 +863,11 @@ def test_real_engine_steps_keep_aborts_after_wait_and_close_ranges(
     core.is_mm_encoder_only = core.is_pooling_model = False
     core.check_for_draft_tokens = deferred
     core._should_throttle_prefills = lambda: True
-    core.capture_iteration_details = capture
+    core._untimed_iteration_details = (
+        lambda actual: details
+        if actual is scheduled
+        else pytest.fail("unexpected finished schedule")
+    )
     core.log_error_detail = diagnostic
     core._wait_for_output = types.MethodType(
         function(path, "EngineCore._wait_for_output", {}), core
@@ -963,7 +917,6 @@ def test_real_engine_steps_keep_aborts_after_wait_and_close_ranges(
 
 
 @pytest.mark.upstream_source
-@pytest.mark.parametrize("v2", [False, True])
 @pytest.mark.parametrize("fail", [False, True])
 def test_real_no_forward_runner_keeps_state_updates_and_exception_identity(
     upstream_source_root,
@@ -971,7 +924,6 @@ def test_real_no_forward_runner_keeps_state_updates_and_exception_identity(
     fake_vllm,
     nvtx_stub,
     monkeypatch,
-    v2,
     fail,
 ):
     from contextlib import nullcontext
@@ -980,7 +932,7 @@ def test_real_no_forward_runner_keeps_state_updates_and_exception_identity(
 
     calls, pushes, pops = [], [], []
     result, error = object(), RuntimeError("state update failed")
-    source = "gpu/model_runner.py" if v2 else "gpu_model_runner.py"
+    source = "gpu/model_runner.py"
     provider = function(
         upstream_source_root / "vllm/v1/worker" / source,
         "GPUModelRunner.execute_model",
@@ -991,7 +943,7 @@ def test_real_no_forward_runner_keeps_state_updates_and_exception_identity(
             "EMPTY_MODEL_RUNNER_OUTPUT": result,
         },
     )
-    cls = fake_vllm.GPUModelRunnerV2 if v2 else fake_vllm.GPUModelRunner
+    cls = fake_vllm.GPUModelRunnerV2
     monkeypatch.setattr(cls, "execute_model", provider)
     monkeypatch.setenv("VLLM_SAIL_NVTX_PROFILE", "1")
     profiling_pkg.install()
@@ -1007,41 +959,36 @@ def test_real_no_forward_runner_keeps_state_updates_and_exception_identity(
         if fail:
             raise error
 
-    if v2:
-        owner.draft_tokens_handler = SimpleNamespace(
-            begin_step=lambda actual: calls.append(("begin", actual))
-        )
-        owner.update_pp_decode_requests = lambda: calls.append("pp")
-        owner.finish_requests = update
-        owner.free_states = lambda actual: calls.append(("free", actual))
-        owner.add_requests = lambda actual: calls.append(("add", actual))
-        owner.update_requests = lambda actual: calls.append(("requests", actual))
-        owner.encoder_cache = owner.aux_output_connector = None
-        owner.block_tables = SimpleNamespace(
-            apply_staged_writes=lambda: calls.append("writes")
-        )
-        owner.kv_connector = SimpleNamespace(
-            no_forward=lambda actual: result
-            if actual is scheduled
-            else pytest.fail("schedule lost")
-        )
-        owner._merge_ec_connector_no_forward = (
-            lambda actual, value: value
-            if actual is scheduled
-            else pytest.fail("schedule lost")
-        )
-    else:
-        owner.execute_model_state = owner.speculative_config = None
-        owner.synchronize_input_prep = nullcontext
-        owner._update_states = update
+    owner.draft_tokens_handler = SimpleNamespace(
+        begin_step=lambda actual: calls.append(("begin", actual))
+    )
+    owner.update_pp_decode_requests = lambda: calls.append("pp")
+    owner.finish_requests = update
+    owner.free_states = lambda actual: calls.append(("free", actual))
+    owner.add_requests = lambda actual: calls.append(("add", actual))
+    owner.update_requests = lambda actual: calls.append(("requests", actual))
+    owner.encoder_cache = owner.aux_output_connector = None
+    owner.block_tables = SimpleNamespace(
+        apply_staged_writes=lambda: calls.append("writes")
+    )
+    owner.kv_connector = SimpleNamespace(
+        no_forward=lambda actual: result
+        if actual is scheduled
+        else pytest.fail("schedule lost")
+    )
+    owner._merge_ec_connector_no_forward = (
+        lambda actual, value: value
+        if actual is scheduled
+        else pytest.fail("schedule lost")
+    )
     if fail:
         with pytest.raises(RuntimeError) as raised:
             owner.execute_model(scheduled)
         assert raised.value is error
     else:
         assert owner.execute_model(scheduled) is result
-    expected = [("begin", scheduled), "pp", "update"] if v2 else ["update"]
-    if v2 and not fail:
+    expected = [("begin", scheduled), "pp", "update"]
+    if not fail:
         expected += [
             ("free", scheduled),
             ("add", scheduled),
@@ -1050,12 +997,9 @@ def test_real_no_forward_runner_keeps_state_updates_and_exception_identity(
         ]
     assert calls == expected
     expected_pushes = ["[prof_range]: iter 0"]
-    if v2:
-        expected_pushes.append("total bs=0, P bs=0")
+    expected_pushes.append("total bs=0, P bs=0")
     assert pushes == expected_pushes
-    assert len(pops) == (2 if v2 else 1) and owner.iteration == 1
-    if not v2:
-        assert owner._ppu_nvtx_prof_scheduler_output is None
+    assert len(pops) == 2 and owner.iteration == 1
 
 
 @pytest.mark.upstream_source
@@ -1083,6 +1027,7 @@ def test_real_scheduler_update_preserves_output_sets_and_inflight_fence(
     class RequestBoundary:
         def __init__(self):
             self.num_computed_tokens = 3
+            self.has_encoder_inputs = False
             self.num_in_flight_tokens = 1
             self.num_tokens = 5
             self.num_output_placeholders = 0
@@ -1110,3 +1055,53 @@ def test_real_scheduler_update_preserves_output_sets_and_inflight_fence(
     assert output.finished_req_ids is not owner.finished_req_ids
     assert output.preempted_req_ids is not owner.reset_preempted_req_ids
     assert "finish_req: {'r9'}" in nvtx_stub["marks"]
+
+
+def test_layerwise_hooks_balance_ranges_and_deduplicate_shared_draft_layers(modules):
+    from tests.support.source import function
+
+    events = []
+    skip = type("Dropout", (), {})
+    modules(
+        "torch",
+        nn=SimpleNamespace(
+            **{
+                n: skip
+                for n in ("Identity", "Dropout", "Dropout1d", "Dropout2d", "Dropout3d")
+            }
+        ),
+        cuda=SimpleNamespace(
+            nvtx=SimpleNamespace(range_pop=lambda: events.append("pop"))
+        ),
+    )
+    modules(
+        "vllm.utils.nvtx_pytorch_hooks",
+        construct_marker_dict_and_push=lambda name, layer, args, **kw: events.append(
+            (name, args, kw)
+        ),
+    )
+
+    class Layer:
+        def register_forward_pre_hook(self, hook, *, with_kwargs):
+            assert with_kwargs and not hasattr(self, "pre")
+            self.pre = hook
+
+        def register_forward_hook(self, hook, *, always_call):
+            assert always_call and not hasattr(self, "post")
+            self.post = hook
+
+    shared = Layer()
+    network = SimpleNamespace(
+        named_modules=lambda prefix: [(prefix + ".shared", shared)]
+    )
+    hooks = function("vllm_sail/profiling/layerwise.py", "_make_hooks", {})()
+    hooks.register_hooks(network, "target")
+    hooks.register_hooks(network, "draft")
+    shared.pre(shared, (2,), {"key": 3})
+    shared.post(shared, (2,), None)
+    assert events == [
+        ("target.shared", (2,), {"kwargs": {"key": 3}}),
+        "pop",
+        ("target.shared", None, {"out_tensor": None}),
+        "pop",
+    ]

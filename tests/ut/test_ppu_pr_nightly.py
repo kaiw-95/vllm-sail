@@ -216,7 +216,11 @@ def test_pr_nightly_workflow_pins_same_head_serializes_lanes_and_keeps_ci_status
         "ppu-pr-nightly-legacy-*-${{ github.run_id }}-*",
     }
     assert all("statuses" not in job.get("permissions", {}) for job in jobs.values())
-    assert all("secrets" not in job for job in jobs.values())
+    assert jobs["build"]["secrets"] == {
+        "ci_registry_username": "${{ secrets.RELEASE_USERNAME }}",
+        "ci_registry_token": "${{ secrets.RELEASE_TOKEN }}",
+    }
+    assert all("secrets" not in job for name, job in jobs.items() if name != "build")
 
     legacy_leaf = yaml.safe_load((workflows / "_ppu-accuracy-tests.yaml").read_text())
     assert legacy_leaf["jobs"]["accuracy"]["strategy"]["max-parallel"] == 1
@@ -469,3 +473,21 @@ def test_trusted_runtime_container_never_executes_candidate_runtime_image_on_hos
     assert f"source={candidate_dir.resolve()},target=/source,readonly" in (
         docker_log.read_text()
     )
+
+
+def test_resolves_qwen38_flash_next_recipe_and_legacy_without_ambiguity() -> None:
+    recipe_cases, recipe_matrix, legacy_cases = resolve_cases(
+        ROOT, "qwen3.8-flash-next,qwen3.8-flash-next-dp8-ep", True
+    )
+    assert recipe_cases == ["qwen3.8-flash-next", "qwen3.8-flash-next-dp8-ep"]
+    assert recipe_matrix == build_recipe_matrix(
+        "qwen3.8-flash-next,qwen3.8-flash-next-dp8-ep", "model_sanity"
+    )
+    assert legacy_cases == []
+
+    for recipe_enabled in (True, False):
+        assert resolve_cases(ROOT, "qwen3.8-flash-next-dp-ep", recipe_enabled) == (
+            [],
+            None,
+            ["qwen3.8-flash-next-dp-ep"],
+        )

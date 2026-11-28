@@ -152,10 +152,12 @@ were produced, even when a failed recipe did not write a result summary.
 ### Upstream test reuse
 
 Upstream reuse runs on a single M890 card in the authorized PPU pipeline, not
-automatically on PRs or a nightly schedule. It uses the runner-configured Docker
-runtime and the validated CI wheels with the SAIL plugin enabled, preserves the
-image's torch/torchvision stack and installs only the dedicated
-`requirements/upstream-reuse.txt` tooling. `requirements/dev.txt` stays unchanged.
+automatically on PRs or a nightly schedule. Trusted CI selects its Docker
+runtime in the workflow. PR Preview uses the runner's existing runtime.
+Upstream reuse enables the SAIL plugin with the validated CI wheels and
+preserves the image's torch/torchvision stack. It reuses the image's pytest,
+tblib, Numba and Transformers when they satisfy the test environment. Older
+images get any missing packages installed under the image constraints.
 
 The container reads `HF_HOME=/nas_aisw/datasets/hf_cache` in offline mode. The
 cache and `/nas_aisw/datasets/checkpoints/LLM` are mounted read-only at their host
@@ -374,8 +376,9 @@ finish reason. Truncation at the output limit fails; the default budget is
 4096 output tokens per request (`--max-tokens` overrides it). DP16 uses a
 16-request burst after the first request; this does not establish per-rank
 routing. Requests use seed 0. Most presets use temperature 0; Qwen3.5-35B uses
-temperature 1.0, matching its checkpoint's sampled-generation default and
-[official model guidance](https://huggingface.co/Qwen/Qwen3.5-35B-A3B).
+temperature 1.0 (matching its checkpoint's sampled-generation default and
+[official model guidance](https://huggingface.co/Qwen/Qwen3.5-35B-A3B)) and
+Qwen3.5-397B uses temperature 0.6.
 Responses with reasoning but empty content fail. The runner records exact commands,
 package paths and versions, device capabilities, startup logs, requests,
 responses and JSON results. It terminates its own server process group after

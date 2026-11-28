@@ -207,7 +207,7 @@ def test_build_script_preserves_required_build_contract() -> None:
         "cargo --version",
         "--no-build-isolation --no-deps",
         'git -C "${VLLM_SRC}" fetch --tags',
-        "check_vllm_compatibility()",
+        "check_vllm_compatibility(strict=True)",
         "ppu_wheel_manifest.py",
         "VERBOSE=1",
         "build-manifest.txt",
@@ -419,10 +419,10 @@ def test_image_build_captures_the_pinned_image_stack_before_building():
     assert verify < text.index("status=succeeded")
 
 
-def test_ci_uses_separate_pinned_build_and_runtime_stacks():
+def test_ci_uses_workflow_configured_build_and_runtime_image():
     import yaml
 
-    build_image = (
+    ops_build_image = (
         "download.t-head.cn/docker_release/pytorch@sha256:"
         "a33a67832f7ec442c481421e94255518dd67e464406f8e610c15d2b594b21f80"
     )
@@ -431,14 +431,90 @@ def test_ci_uses_separate_pinned_build_and_runtime_stacks():
         "workflow_dispatch"
     ]["inputs"]
     assert not {"sdk_url", "torch_url"} & inputs.keys()
-    assert inputs["build_image"]["default"] == build_image
+    assert inputs["build_image"]["default"] == ops_build_image
     assert inputs["ops_image"]["required"] is True
     assert "default" not in inputs["ops_image"]
     build = workflow["jobs"]["build"]
-    assert build_image in build["container"]["image"]
-    assert build["env"]["VLLM_SAIL_BUILD_IMAGE"] == build["container"]["image"]
+    image = "download.t-head.cn/docker_test/vllm:v0.34.0-20261127-834042f"
+    build_image = build["container"]["image"]
+    assert "inputs.build_image ||" in build_image
+    assert (
+        f"(github.event_name == 'pull_request' && '{ops_build_image}')" in build_image
+    )
+    assert f"|| '{image}'" in build_image
+    assert build["env"]["VLLM_SAIL_BUILD_IMAGE"] == build_image
+    for field, secret in (
+        ("username", "ci_registry_username"),
+        ("password", "ci_registry_token"),
+    ):
+        credentials = build["container"]["credentials"][field]
+        assert "github.repository == 'vllm-project/vllm-sail'" in credentials
+        assert (
+            "(github.event_name == 'workflow_dispatch' || github.event_name == 'schedule')"
+            in credentials
+        )
+        assert (
+            f"(inputs.build_image == '' || inputs.build_image == '{image}')"
+            in credentials
+        )
+        assert f"&& secrets.{secret} || ''" in credentials
+    assert "ci_registry_" not in str(build["env"])
+    assert "ci_registry_" not in str(build["steps"])
+    build_step = next(
+        step for step in build["steps"] if step["name"] == "Build or repackage wheels"
+    )
+    assert build_step["env"]["RUSTUP_DIST_SERVER"] == "https://static.rust-lang.org"
+    assert (
+        build_step["env"]["RUSTUP_UPDATE_ROOT"] == "https://static.rust-lang.org/rustup"
+    )
+    trusted_callers = {
+        "ppu-pr-ci.yaml": "ppu",
+        "ppu-accuracy-nightly.yaml": "build",
+        "ppu-pr-nightly.yaml": "build",
+        "ppu-recipe-fast-sanity.yaml": "build",
+        "nightly-wheels.yaml": "build",
+        "perf-regression.yaml": "build",
+    }
+    for name, job_name in trusted_callers.items():
+        jobs = yaml.safe_load((WORKFLOW.parent / name).read_text())["jobs"]
+        assert jobs[job_name]["secrets"] == {
+            "ci_registry_username": "${{ secrets.RELEASE_USERNAME }}",
+            "ci_registry_token": "${{ secrets.RELEASE_TOKEN }}",
+        }
+    for name in (
+        "_ppu-accuracy-tests.yaml",
+        "_ppu-kernel-perf.yaml",
+        "_ppu-model-tests.yaml",
+        "_ppu-pin-ut.yaml",
+        "_ppu-recipe-fast-sanity.yaml",
+        "_ppu-recipe-model-sanity.yaml",
+        "_ppu-upstream-reuse.yaml",
+        "ppu-accuracy-nightly.yaml",
+        "ppu-build-and-test.yaml",
+    ):
+        runtime_workflow = yaml.safe_load((WORKFLOW.parent / name).read_text())
+        set_image = next(
+            step
+            for job in runtime_workflow["jobs"].values()
+            for step in job.get("steps", [])
+            if step.get("name") == "Set the CI runtime image"
+        )
+        assert set_image["if"] == "github.event_name != 'pull_request'"
+        assert set_image["env"] == {"CI_RUNTIME_IMAGE": image}
+        assert "PPU_CI_RUNTIME_IMAGE=%s" in set_image["run"]
     pipeline = yaml.safe_load((WORKFLOW.parent / "ppu-build-and-test.yaml").read_text())
     assert "runtime_image" not in pipeline[True]["workflow_call"]["inputs"]
+    assert pipeline["jobs"]["build"]["secrets"] == {
+        "ci_registry_username": "${{ secrets.ci_registry_username }}",
+        "ci_registry_token": "${{ secrets.ci_registry_token }}",
+    }
+    preview = yaml.safe_load((WORKFLOW.parent / "kernel-perf-label.yaml").read_text())
+    build_job = next(
+        job
+        for job in preview["jobs"].values()
+        if job.get("uses") == "./.github/workflows/_ppu-build.yaml"
+    )
+    assert "secrets" not in build_job
     for job in ("pin-unit-tests", "model-tests", "recipe-sanity"):
         assert "image" not in pipeline["jobs"][job]["with"]
     for name in (
@@ -979,15 +1055,34 @@ def test_runtime_scripts_capture_same_image_stack_before_installing_wheels(scrip
     assert "--constraints" in text[capture:install]
 
 
-@pytest.mark.parametrize("script", ["ppu_e2e_smoke.sh", "ppu_upstream_reuse.sh"])
-def test_runtime_lanes_upgrade_transformers_before_verifying_image_stack(
-    script, tmp_path
+@pytest.mark.parametrize(
+    ("script", "package", "extra"),
+    [
+        ("ppu_e2e_smoke.sh", "transformers", ""),
+        ("ppu_upstream_reuse.sh", "transformers", ""),
+        ("ppu_pin_ut.sh", "nvtx", "profiling"),
+    ],
+)
+@pytest.mark.parametrize("preinstalled", [True, False])
+def test_runtime_lanes_check_wheel_dependencies_before_verifying_image_stack(
+    script, package, extra, preinstalled, tmp_path
 ):
-    from packaging.requirements import Requirement
-
     text = (ROOT / "scripts/ci" / script).read_text()
     start = text.index("python -m pip install")
     end = text.index("\n\n", text.index('ppu_image_stack.py" verify', start))
+    dist_info = tmp_path / "vllm_sail-0.0.0.dist-info"
+    dist_info.mkdir()
+    (dist_info / "METADATA").write_text(
+        "Name: vllm-sail\n"
+        "Version: 0.0.0\n"
+        "Provides-Extra: profiling\n"
+        "Requires-Dist: transformers==5.19.0\n"
+        'Requires-Dist: transformers>=5.18.0; python_version >= "3.10"\n'
+        'Requires-Dist: transformers==5.20.0; python_version < "3.10"\n'
+        'Requires-Dist: nvtx>=0.2.17; extra == "profiling"\n'
+        'Requires-Dist: nvtx==9.0.0; extra == "dev"\n'
+        "Requires-Dist: unrelated>=1\n"
+    )
     calls = tmp_path / "calls.jsonl"
     python = tmp_path / "python"
     python.write_text(
@@ -995,55 +1090,106 @@ def test_runtime_lanes_upgrade_transformers_before_verifying_image_stack(
         "import json, os, sys\n"
         "with open(os.environ['CALLS'], 'a') as log:\n"
         "    log.write(json.dumps([sys.argv[1:], os.environ.get('PIP_CONSTRAINT')]) + '\\n')\n"
+        "if sys.argv[1] == '-':\n"
+        "    os.execv(sys.executable, [sys.executable, *sys.argv[1:]])\n"
+        "if '--dry-run' in sys.argv and os.environ['PREINSTALLED'] == '0':\n"
+        "    sys.exit(1)\n"
     )
     python.chmod(0o755)
     subprocess.run(
         [
             "bash",
             "-euc",
+            'source "${ROOT_DIR}/scripts/ci/ppu_ci_deps.sh"\n'
             "vllm_wheels=(/wheels/vllm.whl)\n"
             "sail_wheels=(/wheels/vllm_sail.whl)\n" + text[start:end],
         ],
         env={
             "PATH": str(tmp_path) + os.pathsep + os.environ["PATH"],
+            "PYTHONPATH": str(tmp_path),
             "ROOT_DIR": str(ROOT),
             "WHEELS_DIR": str(tmp_path),
             "REUSE_RESULTS_DIR": str(tmp_path),
+            "UT_RESULTS_DIR": str(tmp_path),
             "PIP_CONSTRAINT": str(tmp_path / "image-constraints.txt"),
             "CALLS": str(calls),
+            "PREINSTALLED": str(int(preinstalled)),
             "BASH_ENV": "/dev/null",
         },
+        cwd=tmp_path,
         check=True,
     )
     recorded = [json.loads(line) for line in calls.read_text().splitlines()]
     assert recorded[-1][0][1] == "verify"
+    metadata_index = next(
+        i for i, (args, _) in enumerate(recorded) if args == ["-", package, extra]
+    )
+    installed_wheels = recorded[:metadata_index]
+    assert installed_wheels
+    assert all("--force-reinstall" in args for args, _ in installed_wheels)
 
-    def requirements(path):
-        for line in path.read_text().splitlines():
-            line = line.split("#", 1)[0].strip()
-            if line:
-                yield Requirement(line)
+    extra_args = {
+        "ppu_upstream_reuse.sh": [
+            "--no-cache-dir",
+            "pytest==9.1.0",
+            "tblib==3.1.0",
+            "numba>=0.65",
+        ],
+        "ppu_pin_ut.sh": ["-r", str(ROOT / "requirements/dev.txt")],
+    }.get(script, [])
+    selected = {
+        "transformers": ["transformers==5.19.0", "transformers>=5.18.0"],
+        "nvtx": ["nvtx>=0.2.17"],
+    }[package]
+    pip = ["-m", "pip", "install"]
+    expected = [[*pip, "--dry-run", "--no-index", *extra_args, *selected]]
+    if not preinstalled:
+        expected.append([*pip, *extra_args, *selected])
+    constraint = str(tmp_path / "image-constraints.txt")
+    assert recorded[metadata_index + 1 : -1] == [
+        [args, constraint] for args in expected
+    ]
 
-    installed = []
-    for args, constraint in recorded[:-1]:
-        if args[:3] != ["-m", "pip", "install"]:
-            continue
-        assert constraint == str(tmp_path / "image-constraints.txt")
-        for index, arg in enumerate(args[:-1]):
-            if arg == "-r":
-                installed.extend(requirements(Path(args[index + 1])))
-    transformers = [req for req in installed if req.name == "transformers"]
-    assert len(transformers) == 1, "runtime must upgrade the image's transformers"
-    assert "5.16.1" in transformers[0].specifier
-    assert "5.15.0" not in transformers[0].specifier
-    assert "5.20.0" not in transformers[0].specifier
-    for filename in ("dev.txt", "ppu.txt"):
-        expected = next(
-            req
-            for req in requirements(ROOT / "requirements" / filename)
-            if req.name == "transformers"
-        )
-        assert transformers[0].specifier == expected.specifier
+
+@pytest.mark.parametrize(
+    ("spec", "error"),
+    [
+        ("nvtx", "Missing active transformers requirement"),
+        (
+            "transformers @ https://example.invalid/transformers.whl",
+            "Expected an index requirement for transformers",
+        ),
+    ],
+)
+def test_runtime_wheel_dependency_rejects_invalid_inputs_before_pip(
+    spec, error, tmp_path
+):
+    metadata = tmp_path / "vllm_sail-0.0.0.dist-info" / "METADATA"
+    metadata.parent.mkdir()
+    metadata.write_text(f"Name: vllm-sail\nVersion: 0.0.0\nRequires-Dist: {spec}\n")
+    result = subprocess.run(
+        [
+            "bash",
+            "-euc",
+            'source "$CI_DEPS"\n'
+            'python() { "$TEST_PYTHON" "$@"; }\n'
+            'ppu_ci_install_if_missing() { echo "unexpected pip invocation"; }\n'
+            "ppu_ci_install_wheel_dependency transformers ''",
+        ],
+        cwd=tmp_path,
+        env={
+            "PATH": os.environ["PATH"],
+            "PYTHONPATH": str(tmp_path),
+            "BASH_ENV": "/dev/null",
+            "CI_DEPS": str(ROOT / "scripts/ci/ppu_ci_deps.sh"),
+            "TEST_PYTHON": sys.executable,
+        },
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert error in result.stderr
+    assert not result.stdout
 
 
 @pytest.mark.parametrize(
@@ -1063,6 +1209,12 @@ def test_runtime_lanes_upgrade_transformers_before_verifying_image_stack(
         ("third", 3),
         ("all", None),
         ("legacy", 1),
+        ("vllm_only", None),
+        ("vllm_fingerprint", None),
+        ("vllm_wheel_hash", None),
+        ("tagged_vllm_only", None),
+        ("tagged_image_changed", None),
+        ("tagged_image_unverified", None),
     ],
 )
 def test_native_repack_selects_first_verified_donor(
@@ -1076,16 +1228,54 @@ def test_native_repack_selects_first_verified_donor(
         source, pytorch_sail_arch=arch, vllm_sail_hg_flags="-O3"
     )
     pin, sail_commit = "1" * 40, "2" * 40
+    tagged = first_failure in {
+        "tagged_vllm_only",
+        "tagged_image_changed",
+        "tagged_image_unverified",
+    }
+    upstream_only = tagged or first_failure in {
+        "vllm_only",
+        "vllm_fingerprint",
+        "vllm_wheel_hash",
+    }
+    image = f"sdk@sha256:{'a' * 64}" if upstream_only else ""
+    image_id = ""
+    if tagged:
+        image = f"docker-image-id:sha256:{'a' * 64}"
+        if first_failure != "tagged_image_unverified":
+            digest = "b" if first_failure == "tagged_image_changed" else "a"
+            image_id = f"sha256:{digest * 64}"
+        else:
+            fingerprint = manifest.native_fingerprint(
+                source,
+                build_image="sdk:ci",
+                pytorch_sail_arch=arch,
+                vllm_sail_hg_flags="-O3",
+            )
     donor_root = tmp_path / "native-reuse"
-    for slot in (1, 2, 3):
-        donor = donor_root / str(slot)
+    for slot in ("1", "2", "3", "upstream"):
+        if slot == "upstream" and not upstream_only:
+            continue
+        donor = donor_root / slot
         data = make_donor(
-            donor, vllm_commit=pin, sail_commit=sail_commit, fingerprint=fingerprint
+            donor,
+            vllm_commit=pin,
+            sail_commit=sail_commit,
+            fingerprint=(
+                manifest.native_fingerprint(
+                    source,
+                    build_image=image,
+                    pytorch_sail_arch=arch,
+                    vllm_sail_hg_flags="-O3",
+                )
+                if slot == "upstream"
+                else fingerprint
+            ),
         )
-        failure = first_failure if slot == 1 else None
+        failure = first_failure if slot == "1" else None
         if first_failure == "all":
             failure = "sail_commit"
-        elif first_failure == "third" and slot < 3:
+        elif first_failure == "third" and slot in {"1", "2"}:
             failure = "pin"
         if failure not in {"missing_sidecar", "legacy"}:
             expected = "invalid" if failure == "invalid_sidecar" else sail_commit
@@ -1102,6 +1292,15 @@ def test_native_repack_selects_first_verified_donor(
             data["commits"]["vllm-sail"] = "0" * 40
         elif failure == "fingerprint":
             data["native_reuse"]["fingerprint"] = "0" * 64
+        if slot == "upstream":
+            data["vllm_build_fingerprint"] = manifest.vllm_build_fingerprint(
+                source, commit=pin, image=image
+            )
+            if first_failure == "vllm_fingerprint":
+                data["vllm_build_fingerprint"] = "0" * 64
+            elif first_failure == "vllm_wheel_hash":
+                wheel = donor / data["wheels"]["vllm"]["file"]
+                wheel.write_bytes(wheel.read_bytes() + b"changed")
         (donor / manifest.MANIFEST).write_text(
             "{" if failure == "manifest" else json.dumps(data)
         )
@@ -1176,7 +1375,10 @@ git() {
             "VLLM_SAIL_NATIVE_REUSE_ROOT": (
                 "" if first_failure == "legacy" else str(donor_root)
             ),
-            "VLLM_SAIL_BUILD_IMAGE": "",
+            "VLLM_SAIL_BUILD_IMAGE": "sdk:ci" if tagged else image,
+            "VLLM_SAIL_BUILD_IMAGE_ID": image_id,
+            "VLLM_REPOSITORY": "https://github.com/vllm-project/vllm.git",
+            "PREPARED_ENV": "0",
             "CMAKE_BUILD_TYPE": "Release",
             "CMAKE_HGCC_DIR": "",
             "VLLM_SAIL_HG_FLAGS": "-O3",
@@ -1199,8 +1401,17 @@ git() {
     expected_order = list(range(1, (selected or 3) + 1))
     if first_failure in {"missing_sidecar", "invalid_sidecar"}:
         expected_order.remove(1)
+    elif first_failure == "tagged_image_unverified":
+        expected_order = []
     assert attempted == [str(slot) for slot in expected_order]
-    if selected is None:
+    if first_failure in {"vllm_only", "tagged_vllm_only"}:
+        assert "entered cold build" not in result.stdout
+        assert "reuse_mode=vllm-only\n" in build_manifest.read_text()
+        (wheel,) = wheels.iterdir()
+        donor_wheel = next((donor_root / "upstream").rglob("vllm-*.whl"))
+        assert wheel.read_bytes() == donor_wheel.read_bytes()
+        assert not list(work.iterdir())
+    elif selected is None:
         assert "entered cold build" in result.stdout
         assert "reuse_source=" not in build_manifest.read_text()
         assert not list(wheels.iterdir())
